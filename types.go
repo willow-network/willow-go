@@ -264,6 +264,38 @@ type QueryResponse struct {
 	Proof      []byte        `json:"proof,omitempty"`
 }
 
+// HistoricalQueryRequest represents a request for historical checkpoint data.
+type HistoricalQueryRequest struct {
+	Path         [][]byte `json:"path"`                    // GroveDB path as byte arrays
+	Key          []byte   `json:"key,omitempty"`           // Key to query (for single-key queries)
+	QueryType    string   `json:"query_type,omitempty"`    // Query type: "get", "get_range", "get_path"
+	IncludeProof bool     `json:"include_proof,omitempty"` // Whether to include proof
+}
+
+// HistoricalQueryResponse represents the response from a historical query.
+type HistoricalQueryResponse struct {
+	Success          bool        `json:"success"`
+	ProviderDID      string      `json:"provider_did,omitempty"`
+	ProviderEndpoint string      `json:"provider_endpoint,omitempty"`
+	StateRoot        string      `json:"state_root"`        // Checkpoint state root for proof verification
+	BlockRange       [2]uint64   `json:"block_range"`       // Block range covered by the checkpoint
+	Data             interface{} `json:"data"`              // Query results from the indexer
+	Proof            string      `json:"proof,omitempty"`   // Merkle proof (hex-encoded)
+	CanReindex       bool        `json:"can_reindex"`       // Whether data can be re-indexed
+	Error            string      `json:"error,omitempty"`   // Error message if any
+}
+
+// CheckpointInfo represents information about a checkpoint.
+type CheckpointInfo struct {
+	CheckpointID string    `json:"checkpoint_id"`
+	SubgroveID   string    `json:"subgrove_id"`
+	StateRoot    string    `json:"state_root"` // State root hash (hex)
+	BlockRange   [2]uint64 `json:"block_range"`
+	IndexerDID   string    `json:"indexer_did"`
+	SubmittedAt  uint64    `json:"submitted_at"` // Unix timestamp
+	IsTrusted    bool      `json:"is_trusted"`
+}
+
 // GraphQLRequest represents a GraphQL query request.
 type GraphQLRequest struct {
 	Query         string                 `json:"query"`

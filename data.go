@@ -2,7 +2,9 @@ package willow
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
+	"strings"
 
 	"github.com/willow-network/willow-go/grovedb"
 )
@@ -324,4 +326,66 @@ func (qb *QueryBuilder) IncludeProof() *QueryBuilder {
 // Build returns the constructed QueryRequest.
 func (qb *QueryBuilder) Build() *QueryRequest {
 	return qb.query
+}
+
+// GetCheckpointStateRoot retrieves checkpoint information including state root.
+func (d *DataOperations) GetCheckpointStateRoot(ctx context.Context, subgroveID, checkpointID string) (*CheckpointInfo, error) {
+	path := fmt.Sprintf("/checkpoints/%s/%s/state-root", subgroveID, checkpointID)
+	var response CheckpointInfo
+	if err := d.client.get(ctx, path, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+// QueryHistorical queries historical indexed data from a checkpoint.
+// Routes through consensus to available indexer nodes that serve historical data.
+func (d *DataOperations) QueryHistorical(ctx context.Context, subgroveID, checkpointID string, req *HistoricalQueryRequest) (*HistoricalQueryResponse, error) {
+	path := fmt.Sprintf("/historical/query/%s/%s", subgroveID, checkpointID)
+	var response HistoricalQueryResponse
+	if err := d.client.post(ctx, path, req, &response); err != nil {
+		return nil, err
+	}
+	return &response, nil
+}
+
+// QueryHistoricalVerified queries historical data with automatic proof verification.
+// Forces proof inclusion and verifies the proof against the checkpoint's state root.
+func (d *DataOperations) QueryHistoricalVerified(ctx context.Context, subgroveID, checkpointID string, req *HistoricalQueryRequest) (*HistoricalQueryResponse, error) {
+	// Force proof inclusion
+	req.IncludeProof = true
+
+	response, err := d.QueryHistorical(ctx, subgroveID, checkpointID, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Verify the proof against checkpoint state root
+	if response.Proof == "" {
+		return nil, NewProofError("historical query did not return proof data despite include_proof=true")
+	}
+
+	// Decode hex proof
+	proofBytes, err := hex.DecodeString(strings.TrimPrefix(response.Proof, "0x"))
+	if err != nil {
+		return nil, NewProofError(fmt.Sprintf("failed to decode historical proof hex: %v", err))
+	}
+
+	// Verify proof and compare with state root
+	result, err := grovedb.VerifyProof(proofBytes)
+	if err != nil {
+		return nil, NewProofError(fmt.Sprintf("failed to verify historical proof: %v", err))
+	}
+
+	// Normalize and compare root hashes
+	computedRoot := strings.ToLower(strings.TrimPrefix(result.RootHash, "0x"))
+	expectedRoot := strings.ToLower(strings.TrimPrefix(response.StateRoot, "0x"))
+
+	if computedRoot != expectedRoot {
+		return nil, NewProofError(fmt.Sprintf(
+			"historical proof verification failed: computed root %s does not match checkpoint state root %s",
+			result.RootHash, response.StateRoot))
+	}
+
+	return response, nil
 }
