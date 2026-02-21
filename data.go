@@ -147,6 +147,11 @@ func (d *DataOperations) Query(ctx context.Context, appID, subgroveID string, qu
 		}
 	}
 
+	// Apply computed fields if registered for this app/dataset
+	if fields, ok := d.client.computedFields.Get(appID, subgroveID); ok {
+		return ApplyComputedFieldsToResponse(&response, fields), nil
+	}
+
 	return &response, nil
 }
 
@@ -162,6 +167,11 @@ func (d *DataOperations) QueryUnverified(ctx context.Context, appID, subgroveID 
 	var response QueryResponse
 	if err := d.client.post(ctx, path, query, &response); err != nil {
 		return nil, err
+	}
+
+	// Apply computed fields if registered for this app/dataset
+	if fields, ok := d.client.computedFields.Get(appID, subgroveID); ok {
+		return ApplyComputedFieldsToResponse(&response, fields), nil
 	}
 
 	return &response, nil

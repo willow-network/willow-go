@@ -26,6 +26,9 @@ type Client struct {
 	lightClientMu   sync.Mutex
 	lightClientInit bool
 
+	// Computed fields registry for SDK-side derived field computation
+	computedFields *ComputedFieldRegistry
+
 	// Sub-clients for different operations
 	Data         *DataOperations
 	Registration *RegistrationOperations
@@ -48,8 +51,9 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL:     parsedURL,
-		retryConfig: DefaultRetryConfig(),
+		baseURL:        parsedURL,
+		retryConfig:    DefaultRetryConfig(),
+		computedFields: NewComputedFieldRegistry(),
 	}
 
 	// Apply options
@@ -172,6 +176,28 @@ func (c *Client) SetSession(session *Session) {
 	c.sessionMu.Lock()
 	defer c.sessionMu.Unlock()
 	c.session = session
+}
+
+// RegisterComputedFields registers computed fields for an app/dataset combination.
+//
+// Computed fields are derived values calculated from proven data,
+// enabling drop-in compatibility with The Graph's query interfaces.
+//
+// Example:
+//
+//	client.RegisterComputedFields("uniswap-v2", "pairs", UniswapV2PairFields)
+func (c *Client) RegisterComputedFields(appID, datasetID string, fields ComputedFieldSet) {
+	c.computedFields.Register(appID, datasetID, fields)
+}
+
+// HasComputedFields checks if computed fields are registered for an app/dataset.
+func (c *Client) HasComputedFields(appID, datasetID string) bool {
+	return c.computedFields.Has(appID, datasetID)
+}
+
+// GetComputedFields returns the computed fields for an app/dataset.
+func (c *Client) GetComputedFields(appID, datasetID string) (ComputedFieldSet, bool) {
+	return c.computedFields.Get(appID, datasetID)
 }
 
 // IsAuthenticated returns true if the client has a valid (non-expired) session.
