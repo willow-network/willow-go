@@ -37,8 +37,8 @@ func main() {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
 	client.RegisterDID(ctx, identity.DidDocument)
-	client.Authenticate(ctx, identity)
-	fmt.Printf("Authenticated as: %s\n\n", identity.DID())
+	client.SetIdentity(identity)
+	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
 	// 1. Get token information
 	fmt.Println("1. Getting token information...")

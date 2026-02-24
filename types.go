@@ -52,34 +52,6 @@ type DidInfo struct {
 	CreatedAt int64        `json:"created_at"`
 }
 
-// AuthenticationChallenge represents a challenge for DID authentication.
-type AuthenticationChallenge struct {
-	Challenge string `json:"challenge"`
-	Nonce     string `json:"nonce"`
-	ExpiresAt int64  `json:"expires_at"`
-}
-
-// AuthenticationResponse represents the response to an authentication challenge.
-type AuthenticationResponse struct {
-	Did         string `json:"did"`
-	Challenge   string `json:"challenge"`
-	Nonce       string `json:"nonce"`
-	Signature   string `json:"signature"`
-	PublicKeyID string `json:"public_key_id"`
-}
-
-// Session represents an authenticated session.
-type Session struct {
-	Did       string `json:"did"`
-	Token     string `json:"token,omitempty"`
-	ExpiresAt int64  `json:"expires_at"`
-}
-
-// IsExpired checks if the session has expired.
-func (s *Session) IsExpired() bool {
-	return time.Now().Unix() > s.ExpiresAt
-}
-
 // SchemaField defines a field in a schema.
 type SchemaField struct {
 	Name     string `json:"name"`

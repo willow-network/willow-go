@@ -52,12 +52,8 @@ func main() {
 		fmt.Println("   DID registered")
 	}
 
-	_, err = client.Authenticate(ctx, identity)
-	if err != nil {
-		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Println("   Authenticated successfully")
-	}
+	client.SetIdentity(identity)
+	fmt.Println("   Identity set — requests will be signed automatically")
 	fmt.Println()
 
 	appID := "proof-demo"

@@ -5,24 +5,6 @@ import (
 	"time"
 )
 
-func TestSessionIsExpired(t *testing.T) {
-	// Not expired
-	session := &Session{
-		Did:       "did:willow:Ed25519:test",
-		Token:     "token",
-		ExpiresAt: time.Now().Add(1 * time.Hour).Unix(),
-	}
-	if session.IsExpired() {
-		t.Error("Session should not be expired")
-	}
-
-	// Expired
-	session.ExpiresAt = time.Now().Add(-1 * time.Hour).Unix()
-	if !session.IsExpired() {
-		t.Error("Session should be expired")
-	}
-}
-
 func TestRetryConfigDefaults(t *testing.T) {
 	config := DefaultRetryConfig()
 

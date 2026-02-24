@@ -12,7 +12,7 @@ import "time"
 //
 //	client, _ := willow.NewClient("http://localhost:3031")
 //	identity, _ := willow.DEVNET_TEST_ACCOUNT.ToIdentity()
-//	client.Authenticate(ctx, identity)
+//	client.SetIdentity(identity)
 type DevnetTestAccount struct {
 	// DID is the decentralized identifier for the test account.
 	DID string

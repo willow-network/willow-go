@@ -202,22 +202,6 @@ func CreateDidDocument(keyPair *KeyPair) *DidDocument {
 	}
 }
 
-// FormatAuthenticationMessage formats the message to sign for authentication.
-func FormatAuthenticationMessage(challenge *AuthenticationChallenge, did string) string {
-	return fmt.Sprintf("DID Authentication\nChallenge: %s\nNonce: %s\nDID: %s\nExpires: %d",
-		challenge.Challenge, challenge.Nonce, did, challenge.ExpiresAt)
-}
-
-// SignAuthenticationChallenge signs an authentication challenge.
-func SignAuthenticationChallenge(challenge *AuthenticationChallenge, did string, keyPair *KeyPair) (string, error) {
-	message := FormatAuthenticationMessage(challenge, did)
-	signature, err := keyPair.Sign([]byte(message))
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(signature), nil
-}
-
 // Identity represents a complete identity with key pair and DID document.
 type Identity struct {
 	KeyPair     *KeyPair
@@ -279,6 +263,25 @@ func (i *Identity) SignHex(message []byte) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(sig), nil
+}
+
+// SignRequest signs a request and returns the authentication headers.
+// Message format: {METHOD}:{PATH}:{TIMESTAMP}
+func (i *Identity) SignRequest(method, path string) (map[string]string, error) {
+	timestamp := fmt.Sprintf("%d", time.Now().Unix())
+	message := fmt.Sprintf("%s:%s:%s", method, path, timestamp)
+
+	signature, err := i.SignHex([]byte(message))
+	if err != nil {
+		return nil, err
+	}
+
+	return map[string]string{
+		"X-DID":           i.DID(),
+		"X-Public-Key-ID": i.PublicKeyID(),
+		"X-Signature":     signature,
+		"X-Timestamp":     timestamp,
+	}, nil
 }
 
 // FormatRegisterAppMessage formats the message to sign for app registration.

@@ -206,15 +206,6 @@ func TestIsNotAuthenticated(t *testing.T) {
 	}
 }
 
-func TestIsSessionExpired(t *testing.T) {
-	if !IsSessionExpired(ErrSessionExpired) {
-		t.Error("IsSessionExpired should return true for ErrSessionExpired")
-	}
-	if IsSessionExpired(errors.New("other error")) {
-		t.Error("IsSessionExpired should return false for other errors")
-	}
-}
-
 func TestIsNotFound(t *testing.T) {
 	err := NewNotFoundError("resource")
 	if !IsNotFound(err) {

@@ -67,14 +67,10 @@ func main() {
 		fmt.Println("   Registered successfully")
 	}
 
-	// 3. Authenticate with Ed25519 DID
-	fmt.Println("3. Authenticating...")
-	_, err = client.Authenticate(ctx, ed25519Identity)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Printf("   Authenticated as: %s\n\n", ed25519Identity.DID())
-	}
+	// 3. Set identity for per-request signing
+	fmt.Println("3. Setting identity...")
+	client.SetIdentity(ed25519Identity)
+	fmt.Printf("   Identity set for: %s\n\n", ed25519Identity.DID())
 
 	// 4. List registered apps
 	fmt.Println("4. Listing registered apps...")

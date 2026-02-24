@@ -46,8 +46,8 @@ func (t *TokenOperations) GetMyBalance(ctx context.Context) (*BalanceInfo, error
 		return nil, err
 	}
 
-	session := t.client.GetSession()
-	return t.GetBalance(ctx, session.Did)
+	identity := t.client.GetIdentity()
+	return t.GetBalance(ctx, identity.DID())
 }
 
 // GetFeeSchedule retrieves the current fee schedule.

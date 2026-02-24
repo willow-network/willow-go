@@ -215,27 +215,29 @@ func TestSignatureAlgorithmKeyType(t *testing.T) {
 }
 
 func TestFullAuthFlow(t *testing.T) {
-	// Simulate full authentication flow
+	// Simulate full per-request signing flow
 	identity, err := NewIdentity(Ed25519)
 	if err != nil {
 		t.Fatalf("Failed to create identity: %v", err)
 	}
 
-	// Create challenge message (as server would)
-	challenge := &AuthenticationChallenge{
-		Challenge: "challenge_1234567890",
-		Nonce:     "nonce123",
-		ExpiresAt: 1234567890,
-	}
-
-	// Sign the challenge
-	signature, err := SignAuthenticationChallenge(challenge, identity.DID(), identity.KeyPair)
+	// Sign a request
+	headers, err := identity.SignRequest("GET", "/api/v1/data")
 	if err != nil {
-		t.Fatalf("Failed to sign challenge: %v", err)
+		t.Fatalf("Failed to sign request: %v", err)
 	}
 
-	if signature == "" {
+	if headers["X-DID"] != identity.DID() {
+		t.Errorf("Expected DID %s, got %s", identity.DID(), headers["X-DID"])
+	}
+	if headers["X-Signature"] == "" {
 		t.Error("Signature should not be empty")
+	}
+	if headers["X-Timestamp"] == "" {
+		t.Error("Timestamp should not be empty")
+	}
+	if headers["X-Public-Key-ID"] == "" {
+		t.Error("Public key ID should not be empty")
 	}
 }
 

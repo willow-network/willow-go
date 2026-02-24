@@ -19,8 +19,8 @@ import (
 type Client struct {
 	httpClient      *http.Client
 	baseURL         *url.URL
-	session         *Session
-	sessionMu       sync.RWMutex
+	identity        *Identity
+	identityMu      sync.RWMutex
 	retryConfig     RetryConfig
 	lightClient     *lightclient.LightClient
 	lightClientMu   sync.Mutex
@@ -164,18 +164,31 @@ func (b *ClientBuilder) Build() (*Client, error) {
 	return NewClient(b.apiURL, b.options...)
 }
 
-// GetSession returns the current session.
-func (c *Client) GetSession() *Session {
-	c.sessionMu.RLock()
-	defer c.sessionMu.RUnlock()
-	return c.session
+// SetIdentity sets the identity used for request signing.
+func (c *Client) SetIdentity(identity *Identity) {
+	c.identityMu.Lock()
+	defer c.identityMu.Unlock()
+	c.identity = identity
 }
 
-// SetSession sets the current session.
-func (c *Client) SetSession(session *Session) {
-	c.sessionMu.Lock()
-	defer c.sessionMu.Unlock()
-	c.session = session
+// GetIdentity returns the current identity.
+func (c *Client) GetIdentity() *Identity {
+	c.identityMu.RLock()
+	defer c.identityMu.RUnlock()
+	return c.identity
+}
+
+// HasIdentity returns true if an identity is set on the client.
+func (c *Client) HasIdentity() bool {
+	return c.GetIdentity() != nil
+}
+
+// RequireAuth returns an error if the client has no identity set.
+func (c *Client) RequireAuth() error {
+	if !c.HasIdentity() {
+		return ErrNotAuthenticated
+	}
+	return nil
 }
 
 // RegisterComputedFields registers computed fields for an app/dataset combination.
@@ -198,70 +211,6 @@ func (c *Client) HasComputedFields(appID, datasetID string) bool {
 // GetComputedFields returns the computed fields for an app/dataset.
 func (c *Client) GetComputedFields(appID, datasetID string) (ComputedFieldSet, bool) {
 	return c.computedFields.Get(appID, datasetID)
-}
-
-// IsAuthenticated returns true if the client has a valid (non-expired) session.
-func (c *Client) IsAuthenticated() bool {
-	session := c.GetSession()
-	if session == nil {
-		return false
-	}
-	return !session.IsExpired()
-}
-
-// RequireAuth returns an error if the client is not authenticated.
-func (c *Client) RequireAuth() error {
-	if !c.IsAuthenticated() {
-		session := c.GetSession()
-		if session != nil && session.IsExpired() {
-			return ErrSessionExpired
-		}
-		return ErrNotAuthenticated
-	}
-	return nil
-}
-
-// GetChallenge gets an authentication challenge for the given DID.
-func (c *Client) GetChallenge(ctx context.Context, did string) (*AuthenticationChallenge, error) {
-	var challenge AuthenticationChallenge
-	err := c.get(ctx, fmt.Sprintf("/auth/challenge/%s", did), &challenge)
-	if err != nil {
-		return nil, err
-	}
-	return &challenge, nil
-}
-
-// Authenticate authenticates with the given identity.
-func (c *Client) Authenticate(ctx context.Context, identity *Identity) (*Session, error) {
-	// Get challenge
-	challenge, err := c.GetChallenge(ctx, identity.DID())
-	if err != nil {
-		return nil, err
-	}
-
-	// Sign challenge
-	signature, err := SignAuthenticationChallenge(challenge, identity.DID(), identity.KeyPair)
-	if err != nil {
-		return nil, err
-	}
-
-	// Submit response
-	response := AuthenticationResponse{
-		Did:         identity.DID(),
-		Challenge:   challenge.Challenge,
-		Nonce:       challenge.Nonce,
-		Signature:   signature,
-		PublicKeyID: identity.PublicKeyID(),
-	}
-
-	var session Session
-	err = c.post(ctx, "/auth/verify", response, &session)
-	if err != nil {
-		return nil, err
-	}
-
-	c.SetSession(&session)
-	return &session, nil
 }
 
 // RegisterDID registers a new DID document.
@@ -432,9 +381,17 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
-	// Add authentication header if session exists
-	if session := c.GetSession(); session != nil && session.Token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", session.Token))
+	// Add signature headers if identity is set
+	c.identityMu.RLock()
+	identity := c.identity
+	c.identityMu.RUnlock()
+	if identity != nil {
+		headers, err := identity.SignRequest(method, path)
+		if err == nil {
+			for k, v := range headers {
+				req.Header.Set(k, v)
+			}
+		}
 	}
 
 	resp, err := c.doWithRetry(ctx, req)

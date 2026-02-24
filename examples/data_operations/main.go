@@ -40,8 +40,8 @@ func main() {
 	}
 
 	client.RegisterDID(ctx, identity.DidDocument)
-	client.Authenticate(ctx, identity)
-	fmt.Printf("Authenticated as: %s\n\n", identity.DID())
+	client.SetIdentity(identity)
+	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
 	appID := "example-app"
 	subgroveID := "products"

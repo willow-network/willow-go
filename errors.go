@@ -7,11 +7,8 @@ import (
 
 // Error types for the Willow SDK.
 var (
-	// ErrNotAuthenticated is returned when an operation requires authentication but no session exists.
-	ErrNotAuthenticated = errors.New("not authenticated: please authenticate first")
-
-	// ErrSessionExpired is returned when the current session has expired.
-	ErrSessionExpired = errors.New("session expired: please re-authenticate")
+	// ErrNotAuthenticated is returned when an operation requires authentication but no identity is set.
+	ErrNotAuthenticated = errors.New("not authenticated: please call SetIdentity() first")
 
 	// ErrInvalidSignature is returned when signature verification fails.
 	ErrInvalidSignature = errors.New("invalid signature")
@@ -237,11 +234,6 @@ func NewInsufficientFundsError(required, available uint64) *InsufficientFundsErr
 // IsNotAuthenticated checks if the error is a not authenticated error.
 func IsNotAuthenticated(err error) bool {
 	return errors.Is(err, ErrNotAuthenticated)
-}
-
-// IsSessionExpired checks if the error is a session expired error.
-func IsSessionExpired(err error) bool {
-	return errors.Is(err, ErrSessionExpired)
 }
 
 // IsNotFound checks if the error is a not found error.

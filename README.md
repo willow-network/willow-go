@@ -55,13 +55,10 @@ func main() {
         log.Fatal(err)
     }
 
-    // Authenticate
-    session, err := client.Authenticate(ctx, identity)
-    if err != nil {
-        log.Fatal(err)
-    }
+    // Set identity for per-request signing
+    client.SetIdentity(identity)
 
-    fmt.Printf("Authenticated, session expires at: %d\n", session.ExpiresAt)
+    fmt.Println("Identity set, requests will be signed automatically")
 }
 ```
 
@@ -105,12 +102,12 @@ identity, err := willow.IdentityFromPrivateKey(willow.Ed25519, privateKeyHex)
 // Register DID
 doc, err := client.RegisterDID(ctx, identity.DidDocument)
 
-// Authenticate
-session, err := client.Authenticate(ctx, identity)
+// Set identity for per-request signing
+client.SetIdentity(identity)
 
-// Check authentication status
-if client.IsAuthenticated() {
-    fmt.Println("Already authenticated")
+// Check if identity is set
+if client.HasIdentity() {
+    fmt.Println("Identity is set, requests will be signed")
 }
 ```
 
@@ -319,10 +316,7 @@ if err != nil {
     if willow.IsNotFound(err) {
         fmt.Println("User not found")
     } else if willow.IsNotAuthenticated(err) {
-        fmt.Println("Please authenticate first")
-    } else if willow.IsSessionExpired(err) {
-        // Re-authenticate
-        client.Authenticate(ctx, identity)
+        fmt.Println("Please call SetIdentity() first")
     } else if statusCode, ok := willow.IsHTTPError(err); ok {
         fmt.Printf("HTTP error: %d\n", statusCode)
     } else {

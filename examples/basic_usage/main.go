@@ -3,7 +3,7 @@
 // This example demonstrates:
 // - Creating a client
 // - Generating and registering a DID
-// - Authenticating
+// - Setting identity for per-request signing
 // - Storing and retrieving data with automatic proof verification
 //
 // Run with: go run ./examples/basic_usage
@@ -52,14 +52,10 @@ func main() {
 		fmt.Println("   DID registered successfully")
 	}
 
-	// 4. Authenticate
-	fmt.Println("4. Authenticating...")
-	session, err := client.Authenticate(ctx, identity)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Printf("   Authenticated successfully (expires: %d)\n\n", session.ExpiresAt)
-	}
+	// 4. Set identity for per-request signing
+	fmt.Println("4. Setting identity...")
+	client.SetIdentity(identity)
+	fmt.Println("   Identity set — all requests will be signed automatically")
 
 	// 5. Store data (requires an existing app and subgrove)
 	fmt.Println("5. Storing data...")

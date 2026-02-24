@@ -75,16 +75,16 @@ func main() {
 		fmt.Println("   Light client: ENABLED")
 	}
 
-	// 4. Authenticate
-	fmt.Println("\n4. Authenticating...")
+	// 4. Set identity
+	fmt.Println("\n4. Setting identity...")
 	identity, err := willow.NewIdentity(willow.Ed25519)
 	if err != nil {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
 
 	client.RegisterDID(ctx, identity.DidDocument)
-	client.Authenticate(ctx, identity)
-	fmt.Printf("   Authenticated as: %s\n", identity.DID())
+	client.SetIdentity(identity)
+	fmt.Printf("   Identity set for: %s\n", identity.DID())
 
 	// 5. Store test data
 	fmt.Println("\n5. Storing test data...")
