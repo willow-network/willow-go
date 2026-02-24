@@ -62,18 +62,41 @@ type RegisterAppTx struct {
 	Nonce       uint64   `json:"nonce"`
 }
 
+// SubgroveDataStorage holds configuration for DataStorage mode.
+type SubgroveDataStorage struct {
+	Name                  string   `json:"name"`
+	Writers               []string `json:"writers,omitempty"`
+	FreeReaders           []string `json:"free_readers,omitempty"`
+	ReadPricing           any      `json:"read_pricing,omitempty"`
+	RequiredVerifications int      `json:"required_verifications,omitempty"`
+}
+
+// SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
+type SubgroveBlockchainIndexing struct {
+	ManifestIPFS    string `json:"manifest_ipfs"`
+	ManifestContent []byte `json:"manifest_content,omitempty"`
+	WasmModules     []any  `json:"wasm_modules,omitempty"`
+	ExecutionMode   any    `json:"execution_mode,omitempty"`
+	IndexerConfig   any    `json:"indexer_config,omitempty"`
+}
+
+// SubgroveMode represents the mode of a subgrove: DataStorage or BlockchainIndexing.
+// Exactly one field should be non-nil.
+type SubgroveMode struct {
+	DataStorage        *SubgroveDataStorage        `json:"DataStorage,omitempty"`
+	BlockchainIndexing *SubgroveBlockchainIndexing  `json:"BlockchainIndexing,omitempty"`
+}
+
 // RegisterSubgroveTx represents a subgrove registration transaction.
 type RegisterSubgroveTx struct {
-	SubgroveID  string   `json:"subgrove_id"`
-	AppID       string   `json:"app_id"`
-	Name        string   `json:"name"`
-	Schema      string   `json:"schema"`
-	OwnerDid    string   `json:"owner_did"`
-	Writers     []string `json:"writers,omitempty"`
-	Readers     []string `json:"readers,omitempty"`
-	Signature   []byte   `json:"signature"`
-	PublicKeyID string   `json:"public_key_id"`
-	Nonce       uint64   `json:"nonce"`
+	SubgroveID  string        `json:"subgrove_id"`
+	AppID       string        `json:"app_id"`
+	Schema      string        `json:"schema"`
+	OwnerDid    string        `json:"owner_did"`
+	Mode        *SubgroveMode `json:"mode,omitempty"`
+	Signature   []byte        `json:"signature"`
+	PublicKeyID string        `json:"public_key_id"`
+	Nonce       uint64        `json:"nonce"`
 }
 
 // TransferTx represents a token transfer transaction.
