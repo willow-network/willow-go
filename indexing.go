@@ -13,14 +13,14 @@ type IndexingOperations struct {
 	client *Client
 }
 
-// Query executes a GraphQL query against a subgraph.
-func (i *IndexingOperations) Query(ctx context.Context, subgraphID string, req *GraphQLRequest) (*GraphQLResponse, error) {
+// Query executes a GraphQL query against a subgrove.
+func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	// Enable proof by default if light client is available
 	if i.client.HasLightClient() {
 		req.IncludeProof = true
 	}
 
-	path := fmt.Sprintf("/graphql/%s", subgraphID)
+	path := fmt.Sprintf("/graphql/%s", subgroveID)
 	var response GraphQLResponse
 	err := i.client.post(ctx, path, req, &response)
 	if err != nil {
@@ -38,10 +38,10 @@ func (i *IndexingOperations) Query(ctx context.Context, subgraphID string, req *
 }
 
 // QueryUnverified executes a GraphQL query without proof verification (faster).
-func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgraphID string, req *GraphQLRequest) (*GraphQLResponse, error) {
+func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	req.IncludeProof = false
 
-	path := fmt.Sprintf("/graphql/%s", subgraphID)
+	path := fmt.Sprintf("/graphql/%s", subgroveID)
 	var response GraphQLResponse
 	err := i.client.post(ctx, path, req, &response)
 	if err != nil {
@@ -52,16 +52,16 @@ func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgraphID str
 }
 
 // Execute is a convenience method for executing GraphQL queries.
-func (i *IndexingOperations) Execute(ctx context.Context, subgraphID, query string, variables map[string]interface{}) (*GraphQLResponse, error) {
-	return i.Query(ctx, subgraphID, &GraphQLRequest{
+func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query string, variables map[string]interface{}) (*GraphQLResponse, error) {
+	return i.Query(ctx, subgroveID, &GraphQLRequest{
 		Query:     query,
 		Variables: variables,
 	})
 }
 
 // ExecuteWithResult executes a query and unmarshals the result into the provided type.
-func (i *IndexingOperations) ExecuteWithResult(ctx context.Context, subgraphID, query string, variables map[string]interface{}, result interface{}) error {
-	response, err := i.Execute(ctx, subgraphID, query, variables)
+func (i *IndexingOperations) ExecuteWithResult(ctx context.Context, subgroveID, query string, variables map[string]interface{}, result interface{}) error {
+	response, err := i.Execute(ctx, subgroveID, query, variables)
 	if err != nil {
 		return err
 	}
@@ -77,24 +77,24 @@ func (i *IndexingOperations) ExecuteWithResult(ctx context.Context, subgraphID, 
 	return nil
 }
 
-// ListSubgraphs retrieves all available subgraphs.
-func (i *IndexingOperations) ListSubgraphs(ctx context.Context) ([]SubgraphInfo, error) {
-	var subgraphs []SubgraphInfo
-	err := i.client.get(ctx, "/subgraphs", &subgraphs)
+// ListSubgroves retrieves all available subgroves.
+func (i *IndexingOperations) ListSubgroves(ctx context.Context) ([]SubgroveInfo, error) {
+	var subgroves []SubgroveInfo
+	err := i.client.get(ctx, "/subgroves", &subgroves)
 	if err != nil {
 		return nil, err
 	}
-	return subgraphs, nil
+	return subgroves, nil
 }
 
-// GetSubgraph retrieves information about a specific subgraph.
-func (i *IndexingOperations) GetSubgraph(ctx context.Context, subgraphID string) (*SubgraphInfo, error) {
-	var subgraph SubgraphInfo
-	err := i.client.get(ctx, fmt.Sprintf("/subgraphs/%s", subgraphID), &subgraph)
+// GetSubgrove retrieves information about a specific subgrove.
+func (i *IndexingOperations) GetSubgrove(ctx context.Context, subgroveID string) (*SubgroveInfo, error) {
+	var subgrove SubgroveInfo
+	err := i.client.get(ctx, fmt.Sprintf("/subgroves/%s", subgroveID), &subgrove)
 	if err != nil {
 		return nil, err
 	}
-	return &subgraph, nil
+	return &subgrove, nil
 }
 
 // ListIndexers retrieves all indexers.
@@ -117,10 +117,10 @@ func (i *IndexingOperations) GetIndexer(ctx context.Context, indexerID string) (
 	return &indexer, nil
 }
 
-// GetIndexerStatus retrieves the status of an indexer for a subgraph.
-func (i *IndexingOperations) GetIndexerStatus(ctx context.Context, indexerID, subgraphID string) (*IndexerInfo, error) {
+// GetIndexerStatus retrieves the status of an indexer for a subgrove.
+func (i *IndexingOperations) GetIndexerStatus(ctx context.Context, indexerID, subgroveID string) (*IndexerInfo, error) {
 	var indexer IndexerInfo
-	path := fmt.Sprintf("/indexers/%s/status/%s", indexerID, subgraphID)
+	path := fmt.Sprintf("/indexers/%s/status/%s", indexerID, subgroveID)
 	err := i.client.get(ctx, path, &indexer)
 	if err != nil {
 		return nil, err

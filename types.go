@@ -297,8 +297,8 @@ type GraphQLResponse struct {
 	Proof  []byte          `json:"proof,omitempty"`
 }
 
-// SubgraphInfo represents information about a subgraph (indexed blockchain data).
-type SubgraphInfo struct {
+// SubgroveInfo represents information about a subgrove (indexed blockchain data).
+type SubgroveInfo struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Description  string `json:"description,omitempty"`
@@ -315,7 +315,7 @@ type IndexerInfo struct {
 	ID          string   `json:"id"`
 	Address     string   `json:"address"`
 	Stake       uint64   `json:"stake"`
-	Subgraphs   []string `json:"subgraphs"`
+	Subgroves   []string `json:"subgroves"`
 	Status      string   `json:"status"`
 	Performance float64  `json:"performance"`
 }

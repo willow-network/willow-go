@@ -1,9 +1,9 @@
 // GraphQL indexing example for the Willow Go SDK
 //
 // This example demonstrates:
-// - Listing available subgraphs
+// - Listing available subgroves
 // - Querying indexed blockchain data with GraphQL
-// - Checking subgraph indexing status
+// - Checking subgrove indexing status
 // - Listing indexers
 //
 // Run with: go run ./examples/graphql_indexing
@@ -31,16 +31,16 @@ func main() {
 	}
 	defer client.Close()
 
-	// 1. List available subgraphs
-	fmt.Println("1. Listing available subgraphs...")
-	subgraphs, err := client.Indexing.ListSubgraphs(ctx)
+	// 1. List available subgroves
+	fmt.Println("1. Listing available subgroves...")
+	subgroves, err := client.Indexing.ListSubgroves(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
-	} else if len(subgraphs) == 0 {
-		fmt.Println("   No subgraphs deployed yet")
+	} else if len(subgroves) == 0 {
+		fmt.Println("   No subgroves deployed yet")
 	} else {
-		fmt.Printf("   Found %d subgraphs:\n", len(subgraphs))
-		for _, sg := range subgraphs {
+		fmt.Printf("   Found %d subgroves:\n", len(subgroves))
+		for _, sg := range subgroves {
 			fmt.Printf("   - %s (%s)\n", sg.Name, sg.ID)
 			fmt.Printf("     Status: %s\n", sg.Status)
 			fmt.Printf("     Current block: %d\n", sg.CurrentBlock)
@@ -48,8 +48,8 @@ func main() {
 		fmt.Println()
 	}
 
-	// 2. Query a subgraph (example: Uniswap V3)
-	fmt.Println("2. Querying subgraph (example: uniswap-v3)...")
+	// 2. Query a subgrove (example: Uniswap V3)
+	fmt.Println("2. Querying subgrove (example: uniswap-v3)...")
 	query := `
 		query {
 			swaps(first: 5, orderBy: timestamp, orderDirection: desc) {
@@ -71,7 +71,7 @@ func main() {
 
 	response, err := client.Indexing.Execute(ctx, "uniswap-v3", query, nil)
 	if err != nil {
-		fmt.Printf("   Note: %v (subgraph may not exist)\n\n", err)
+		fmt.Printf("   Note: %v (subgrove may not exist)\n\n", err)
 	} else {
 		fmt.Println("   Query result:")
 		if response.Data != nil {
@@ -150,17 +150,17 @@ func main() {
 		}
 	}
 
-	// 5. Get subgraph status
-	fmt.Println("\n5. Getting subgraph indexing status...")
-	subgraph, err := client.Indexing.GetSubgraph(ctx, "uniswap-v3")
+	// 5. Get subgrove status
+	fmt.Println("\n5. Getting subgrove indexing status...")
+	subgrove, err := client.Indexing.GetSubgrove(ctx, "uniswap-v3")
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   Subgraph: %s\n", subgraph.ID)
-		fmt.Printf("   Network: %s\n", subgraph.Network)
-		fmt.Printf("   Start block: %d\n", subgraph.StartBlock)
-		fmt.Printf("   Current block: %d\n", subgraph.CurrentBlock)
-		fmt.Printf("   Status: %s\n", subgraph.Status)
+		fmt.Printf("   Subgrove: %s\n", subgrove.ID)
+		fmt.Printf("   Network: %s\n", subgrove.Network)
+		fmt.Printf("   Start block: %d\n", subgrove.StartBlock)
+		fmt.Printf("   Current block: %d\n", subgrove.CurrentBlock)
+		fmt.Printf("   Status: %s\n", subgrove.Status)
 	}
 
 	// 6. List indexers
@@ -178,7 +178,7 @@ func main() {
 			fmt.Printf("     Stake: %d WILL\n", indexer.Stake)
 			fmt.Printf("     Status: %s\n", indexer.Status)
 			fmt.Printf("     Performance: %.1f\n", indexer.Performance)
-			fmt.Printf("     Subgraphs: %v\n", indexer.Subgraphs)
+			fmt.Printf("     Subgroves: %v\n", indexer.Subgroves)
 		}
 	}
 
