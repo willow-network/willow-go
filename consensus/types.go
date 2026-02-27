@@ -51,15 +51,16 @@ type RegisterDidTx struct {
 
 // RegisterAppTx represents an app registration transaction.
 type RegisterAppTx struct {
-	AppID       string   `json:"app_id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	AppType     string   `json:"app_type"`
-	OwnerDid    string   `json:"owner_did"`
-	Admins      []string `json:"admins,omitempty"`
-	Signature   []byte   `json:"signature"`
-	PublicKeyID string   `json:"public_key_id"`
-	Nonce       uint64   `json:"nonce"`
+	AppID          string   `json:"app_id"`
+	Name           string   `json:"name"`
+	Description    string   `json:"description,omitempty"`
+	AppType        string   `json:"app_type"`
+	OwnerDid       string   `json:"owner_did"`
+	Admins         []string `json:"admins,omitempty"`
+	InitialFunding *uint64  `json:"initial_funding,omitempty"`
+	Signature      []byte   `json:"signature"`
+	PublicKeyID    string   `json:"public_key_id"`
+	Nonce          uint64   `json:"nonce"`
 }
 
 // SubgroveDataStorage holds configuration for DataStorage mode.
