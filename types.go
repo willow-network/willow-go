@@ -297,6 +297,44 @@ type GraphQLResponse struct {
 	Proof  []byte          `json:"proof,omitempty"`
 }
 
+// SqlRequest represents a SQL query request
+type SqlRequest struct {
+	Query        string `json:"query"`
+	IncludeProof *bool  `json:"include_proof,omitempty"`
+}
+
+// SqlResponse represents the response from a SQL query
+type SqlResponse struct {
+	Columns  []string        `json:"columns"`
+	Rows     [][]interface{} `json:"rows"`
+	Total    *uint64         `json:"total,omitempty"`
+	Warnings []string        `json:"warnings,omitempty"`
+	Proof    *QueryProof     `json:"proof,omitempty"`
+}
+
+// QueryProof contains Merkle proof data for query verification
+type QueryProof struct {
+	MerkleProofs   []MerkleProofData `json:"merkle_proofs"`
+	StateRoot      []byte            `json:"state_root"`
+	BlockHeight    uint64            `json:"block_height"`
+	EthereumAnchor *EthereumAnchor   `json:"ethereum_anchor,omitempty"`
+}
+
+// MerkleProofData contains a single Merkle proof
+type MerkleProofData struct {
+	Key       string   `json:"key"`
+	ValueHash []byte   `json:"value_hash"`
+	Siblings  [][]byte `json:"siblings"`
+	Path      string   `json:"path"`
+}
+
+// EthereumAnchor contains Ethereum anchoring information
+type EthereumAnchor struct {
+	BlockNumber uint64 `json:"block_number"`
+	TxHash      []byte `json:"tx_hash"`
+	Contract    string `json:"contract"`
+}
+
 // SubgroveInfo represents information about a subgrove (indexed blockchain data).
 type SubgroveInfo struct {
 	ID           string `json:"id"`

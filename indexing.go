@@ -1,9 +1,11 @@
 package willow
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/willow-network/willow-go/grovedb"
 )
@@ -57,6 +59,43 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 		Query:     query,
 		Variables: variables,
 	})
+}
+
+// SqlQuery executes a SQL query against a subgrove
+func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
+	req := SqlRequest{
+		Query:        query,
+		IncludeProof: &includeProof,
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal SQL request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/sql/%s", i.client.baseURL.String(), subgroveID)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := i.client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("SQL query request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("SQL query failed with status %d", resp.StatusCode)
+	}
+
+	var result SqlResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode SQL response: %w", err)
+	}
+
+	return &result, nil
 }
 
 // ExecuteWithResult executes a query and unmarshals the result into the provided type.
