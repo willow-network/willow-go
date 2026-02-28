@@ -74,7 +74,6 @@ type SubgroveDataStorage struct {
 
 // SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
 type SubgroveBlockchainIndexing struct {
-	ManifestIPFS    string `json:"manifest_ipfs"`
 	ManifestContent []byte `json:"manifest_content,omitempty"`
 	WasmModules     []any  `json:"wasm_modules,omitempty"`
 	ExecutionMode   any    `json:"execution_mode,omitempty"`
