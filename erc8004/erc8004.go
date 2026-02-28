@@ -154,6 +154,33 @@ type Erc8004ValidationSummary struct {
 	DisputeStats    DisputeStats              `json:"dispute_stats"`
 }
 
+// AgentReputationBrief is a brief reputation summary in agent listings.
+type AgentReputationBrief struct {
+	Score int64  `json:"score"`
+	Tier  string `json:"tier"`
+}
+
+// Erc8004AgentListItem is a single agent in the discovery listing.
+type Erc8004AgentListItem struct {
+	DID                    string               `json:"did"`
+	EthAddress             *string              `json:"eth_address"`
+	AgentURI               string               `json:"agent_uri"`
+	ChainID                uint64               `json:"chain_id"`
+	AgentID                uint64               `json:"agent_id"`
+	Reputation             AgentReputationBrief `json:"reputation"`
+	ValidationCount        int                  `json:"validation_count"`
+	AverageValidationScore float64              `json:"average_validation_score"`
+	RegisteredAt           uint64               `json:"registered_at"`
+}
+
+// Erc8004AgentListResponse is the paginated response from the agent discovery endpoint.
+type Erc8004AgentListResponse struct {
+	Agents []Erc8004AgentListItem `json:"agents"`
+	Total  int                    `json:"total"`
+	Offset int                    `json:"offset"`
+	Limit  int                    `json:"limit"`
+}
+
 // Client provides ERC-8004 agent identity operations.
 type Client struct {
 	apiURL string
@@ -191,6 +218,45 @@ func (c *Client) get(path string) (*apiResponse, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 	return &result, nil
+}
+
+// ListAgents lists/searches ERC-8004 registered agents with optional filters.
+func (c *Client) ListAgents(limit, offset int, minScore int64, tier string) (*Erc8004AgentListResponse, error) {
+	var params []string
+	if limit > 0 {
+		params = append(params, fmt.Sprintf("limit=%d", limit))
+	}
+	if offset > 0 {
+		params = append(params, fmt.Sprintf("offset=%d", offset))
+	}
+	if minScore > 0 {
+		params = append(params, fmt.Sprintf("min_score=%d", minScore))
+	}
+	if tier != "" {
+		params = append(params, "tier="+url.QueryEscape(tier))
+	}
+	path := "/agents"
+	if len(params) > 0 {
+		path += "?"
+		for i, p := range params {
+			if i > 0 {
+				path += "&"
+			}
+			path += p
+		}
+	}
+	result, err := c.get(path)
+	if err != nil {
+		return nil, err
+	}
+	if !result.Success {
+		return nil, fmt.Errorf("%s", result.Error)
+	}
+	var resp Erc8004AgentListResponse
+	if err := json.Unmarshal(result.Data, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse agent list: %w", err)
+	}
+	return &resp, nil
 }
 
 // GetAgentRegistration fetches the ERC-8004 registration JSON for an agent DID.
