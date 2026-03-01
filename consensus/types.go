@@ -69,7 +69,6 @@ type SubgroveDataStorage struct {
 	Writers               []string `json:"writers,omitempty"`
 	FreeReaders           []string `json:"free_readers,omitempty"`
 	ReadPricing           any      `json:"read_pricing,omitempty"`
-	RequiredVerifications int      `json:"required_verifications,omitempty"`
 }
 
 // SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
