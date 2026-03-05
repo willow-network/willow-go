@@ -152,8 +152,10 @@ type TokenInfo struct {
 	Name              string `json:"name"`
 	Symbol            string `json:"symbol"`
 	Decimals          uint8  `json:"decimals"`
-	TotalSupply       uint64 `json:"total_supply"`
-	CirculatingSupply uint64 `json:"circulating_supply"`
+	GenesisSupply     string `json:"genesis_supply"`
+	MintedSupply      string `json:"minted_supply"`
+	MaxSupply         string `json:"max_supply"`
+	CirculatingSupply string `json:"circulating_supply"`
 }
 
 // BalanceInfo represents balance information for a DID or app.
