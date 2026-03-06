@@ -93,10 +93,12 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   Storage fee per byte: %d\n", fees.StorageFeePerByte)
-		fmt.Printf("   Query fee base: %d\n", fees.QueryFeeBase)
-		fmt.Printf("   Query fee per result: %d\n", fees.QueryFeePerResult)
-		fmt.Printf("   Transaction fee base: %d\n\n", fees.TransactionFeeBase)
+		fmt.Printf("   Base TX Cost: %s wei\n", fees.BaseTxCost)
+		fmt.Printf("   Cost Per Byte: %s wei\n", fees.CostPerByte)
+		fmt.Printf("   Query Fee: %s wei\n", fees.QueryFee)
+		fmt.Printf("   Transfer Fee: %d bps\n", fees.TransferFeePercentage)
+		fmt.Printf("   Max TX Size: %d bytes\n", fees.MaxTxSizeBytes)
+		fmt.Printf("   Max Data Payload: %d bytes\n\n", fees.MaxDataPayloadBytes)
 	}
 
 	// 6. Estimate storage fee

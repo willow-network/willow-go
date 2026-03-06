@@ -65,19 +65,19 @@ func (t *TokenOperations) GetFeeSchedule(ctx context.Context) (*FeeSchedule, err
 }
 
 // EstimateStorageFee estimates the storage fee for the given data size.
-func (t *TokenOperations) EstimateStorageFee(ctx context.Context, dataSizeBytes uint64) (uint64, error) {
+func (t *TokenOperations) EstimateStorageFee(ctx context.Context, dataSizeBytes uint64) (string, error) {
 	schedule, err := t.GetFeeSchedule(ctx)
 	if err != nil {
-		return 0, err
+		return "0", err
 	}
-	return dataSizeBytes * schedule.StorageFeePerByte, nil
+	return fmt.Sprintf("%s (cost_per_byte=%s, bytes=%d)", schedule.CostPerByte, schedule.CostPerByte, dataSizeBytes), nil
 }
 
-// EstimateQueryFee estimates the query fee for the given result count.
-func (t *TokenOperations) EstimateQueryFee(ctx context.Context, resultCount uint64) (uint64, error) {
+// EstimateQueryFee estimates the query fee.
+func (t *TokenOperations) EstimateQueryFee(ctx context.Context) (string, error) {
 	schedule, err := t.GetFeeSchedule(ctx)
 	if err != nil {
-		return 0, err
+		return "0", err
 	}
-	return schedule.QueryFeeBase + (resultCount * schedule.QueryFeePerResult), nil
+	return schedule.QueryFee, nil
 }

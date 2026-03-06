@@ -166,12 +166,17 @@ type BalanceInfo struct {
 	Locked    uint64 `json:"locked"`
 }
 
-// FeeSchedule represents the fee schedule for storage operations.
+// FeeSchedule represents the fee schedule for operations.
 type FeeSchedule struct {
-	StorageFeePerByte  uint64 `json:"storage_fee_per_byte"`
-	QueryFeeBase       uint64 `json:"query_fee_base"`
-	QueryFeePerResult  uint64 `json:"query_fee_per_result"`
-	TransactionFeeBase uint64 `json:"transaction_fee_base"`
+	DidRegistration      string `json:"did_registration"`
+	AppRegistration      string `json:"app_registration"`
+	SubgroveRegistration string `json:"subgrove_registration"`
+	BaseTxCost           string `json:"base_tx_cost"`
+	CostPerByte          string `json:"cost_per_byte"`
+	QueryFee             string `json:"query_fee"`
+	TransferFeePercentage uint32 `json:"transfer_fee_percentage"`
+	MaxTxSizeBytes       uint64 `json:"max_tx_size_bytes"`
+	MaxDataPayloadBytes  uint64 `json:"max_data_payload_bytes"`
 }
 
 // ValidatorStatus represents the status of a validator.

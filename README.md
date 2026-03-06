@@ -301,10 +301,11 @@ fmt.Printf("Balance: %d\n", balance.Balance)
 
 // Get fee schedule
 fees, err := client.Token.GetFeeSchedule(ctx)
-fmt.Printf("Storage fee: %d per byte\n", fees.StorageFeePerByte)
+fmt.Printf("Base TX cost: %s wei\n", fees.BaseTxCost)
+fmt.Printf("Cost per byte: %s wei\n", fees.CostPerByte)
 
 // Estimate fees
-storageFee, err := client.Token.EstimateStorageFee(ctx, 1024) // 1KB
+storageFee, err := client.Token.EstimateStorageFee(ctx, 1024) // 1KB write
 ```
 
 ## Error Handling
