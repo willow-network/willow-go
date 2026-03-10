@@ -35,8 +35,6 @@ type RegisterErc8004AgentTx struct {
 
 // AgentReputationSummary is a summary of an agent's reputation.
 type AgentReputationSummary struct {
-	Score                 uint32  `json:"score"`
-	Tier                  string  `json:"tier"`
 	CheckpointSuccessRate float64 `json:"checkpoint_success_rate"`
 	VerificationAccuracy  float64 `json:"verification_accuracy"`
 	ActiveDays            uint32  `json:"active_days"`
@@ -59,8 +57,6 @@ type AgentRegistrationJson struct {
 // ReputationAttestation contains reputation data with a GroveDB Merkle proof.
 type ReputationAttestation struct {
 	DID         string                 `json:"did"`
-	Score       uint32                 `json:"score"`
-	Tier        string                 `json:"tier"`
 	Metrics     map[string]interface{} `json:"metrics"`
 	Proof       string                 `json:"proof"`
 	BlockHeight uint64                 `json:"block_height"`
@@ -70,8 +66,6 @@ type ReputationAttestation struct {
 // ReputationHistoryEvent is a single reputation history event.
 type ReputationHistoryEvent struct {
 	EventType   string  `json:"event_type"`
-	ScoreDelta  int32   `json:"score_delta"`
-	NewScore    uint32  `json:"new_score"`
 	BlockHeight uint64  `json:"block_height"`
 	Timestamp   uint64  `json:"timestamp"`
 	Reference   *string `json:"reference"`
@@ -154,23 +148,15 @@ type Erc8004ValidationSummary struct {
 	DisputeStats    DisputeStats              `json:"dispute_stats"`
 }
 
-// AgentReputationBrief is a brief reputation summary in agent listings.
-type AgentReputationBrief struct {
-	Score int64  `json:"score"`
-	Tier  string `json:"tier"`
-}
-
 // Erc8004AgentListItem is a single agent in the discovery listing.
 type Erc8004AgentListItem struct {
-	DID                    string               `json:"did"`
-	EthAddress             *string              `json:"eth_address"`
-	AgentURI               string               `json:"agent_uri"`
-	ChainID                uint64               `json:"chain_id"`
-	AgentID                uint64               `json:"agent_id"`
-	Reputation             AgentReputationBrief `json:"reputation"`
-	ValidationCount        int                  `json:"validation_count"`
-	AverageValidationScore float64              `json:"average_validation_score"`
-	RegisteredAt           uint64               `json:"registered_at"`
+	DID             string  `json:"did"`
+	EthAddress      *string `json:"eth_address"`
+	AgentURI        string  `json:"agent_uri"`
+	ChainID         uint64  `json:"chain_id"`
+	AgentID         uint64  `json:"agent_id"`
+	ValidationCount int     `json:"validation_count"`
+	RegisteredAt    uint64  `json:"registered_at"`
 }
 
 // Erc8004AgentListResponse is the paginated response from the agent discovery endpoint.
@@ -221,19 +207,13 @@ func (c *Client) get(path string) (*apiResponse, error) {
 }
 
 // ListAgents lists/searches ERC-8004 registered agents with optional filters.
-func (c *Client) ListAgents(limit, offset int, minScore int64, tier string) (*Erc8004AgentListResponse, error) {
+func (c *Client) ListAgents(limit, offset int) (*Erc8004AgentListResponse, error) {
 	var params []string
 	if limit > 0 {
 		params = append(params, fmt.Sprintf("limit=%d", limit))
 	}
 	if offset > 0 {
 		params = append(params, fmt.Sprintf("offset=%d", offset))
-	}
-	if minScore > 0 {
-		params = append(params, fmt.Sprintf("min_score=%d", minScore))
-	}
-	if tier != "" {
-		params = append(params, "tier="+url.QueryEscape(tier))
 	}
 	path := "/agents"
 	if len(params) > 0 {
