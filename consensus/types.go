@@ -73,7 +73,7 @@ type SubgroveDataStorage struct {
 
 // RetentionWindow specifies how long real-time indexed data is retained on consensus nodes.
 type RetentionWindow struct {
-	Type  string `json:"type"`            // "Blocks", "Seconds", or "Indefinite"
+	Type  string `json:"type"`            // "Blocks", "Seconds", "Indefinite", or "VerifyOnly"
 	Value uint64 `json:"value,omitempty"`
 }
 
