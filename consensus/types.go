@@ -71,12 +71,19 @@ type SubgroveDataStorage struct {
 	ReadPricing           any      `json:"read_pricing,omitempty"`
 }
 
+// RetentionWindow specifies how long real-time indexed data is retained on consensus nodes.
+type RetentionWindow struct {
+	Type  string `json:"type"`            // "Blocks", "Seconds", or "Indefinite"
+	Value uint64 `json:"value,omitempty"`
+}
+
 // SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
 type SubgroveBlockchainIndexing struct {
-	ManifestContent []byte `json:"manifest_content,omitempty"`
-	WasmModules     []any  `json:"wasm_modules,omitempty"`
-	ExecutionMode   any    `json:"execution_mode,omitempty"`
-	IndexerConfig   any    `json:"indexer_config,omitempty"`
+	ManifestContent []byte           `json:"manifest_content,omitempty"`
+	WasmModules     []any            `json:"wasm_modules,omitempty"`
+	ExecutionMode   any              `json:"execution_mode,omitempty"`
+	IndexerConfig   any              `json:"indexer_config,omitempty"`
+	RetentionWindow *RetentionWindow `json:"retention_window,omitempty"`
 }
 
 // SubgroveMode represents the mode of a subgrove: DataStorage or BlockchainIndexing.
