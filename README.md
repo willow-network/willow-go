@@ -15,6 +15,8 @@ go get github.com/willow-network/willow-go
 - **Application Management**: Register and manage apps and subgroves
 - **Token Operations**: Query balances and fee schedules
 - **GraphQL Indexing**: Query indexed blockchain data
+- **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
+- **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Light Client**: Trustless verification using CometBFT light client
 - **GroveDB Proofs**: Cryptographic proof verification for all queries
 

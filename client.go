@@ -36,6 +36,7 @@ type Client struct {
 	Validators   *ValidatorOperations
 	Indexing     *IndexingOperations
 	Privacy      *PrivacyOperations
+	Files        *FileOperations
 }
 
 // ClientOption is a functional option for configuring the Client.
@@ -71,6 +72,7 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 	client.Validators = &ValidatorOperations{client: client}
 	client.Indexing = &IndexingOperations{client: client}
 	client.Privacy = &PrivacyOperations{client: client}
+	client.Files = &FileOperations{client: client}
 
 	return client, nil
 }
