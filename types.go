@@ -86,41 +86,9 @@ type SchemaDefinition struct {
 	Indexes     []IndexDefinition `json:"indexes,omitempty"`
 }
 
-// AppType represents the type of application.
-type AppType string
-
-const (
-	AppTypeStandard AppType = "standard"
-	AppTypeIndexer  AppType = "indexer"
-)
-
-// RegisterAppRequest represents a request to register a new app.
-type RegisterAppRequest struct {
-	AppID       string   `json:"app_id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	AppType     AppType  `json:"app_type"`
-	OwnerDid    string   `json:"owner_did"`
-	Admins      []string `json:"admins,omitempty"`
-}
-
-// AppRegistration represents a registered application.
-type AppRegistration struct {
-	AppID       string   `json:"app_id"`
-	Name        string   `json:"name"`
-	Description string   `json:"description,omitempty"`
-	AppType     AppType  `json:"app_type"`
-	OwnerDid    string   `json:"owner_did"`
-	Admins      []string `json:"admins,omitempty"`
-	Balance     uint64   `json:"balance"`
-	CreatedAt   int64    `json:"created_at"`
-	UpdatedAt   int64    `json:"updated_at"`
-}
-
 // RegisterSubgroveRequest represents a request to register a new subgrove.
 type RegisterSubgroveRequest struct {
 	SubgroveID  string           `json:"subgrove_id"`
-	AppID       string           `json:"app_id"`
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
 	Schema      SchemaDefinition `json:"schema"`
@@ -133,7 +101,6 @@ type RegisterSubgroveRequest struct {
 // SubgroveRegistration represents a registered subgrove.
 type SubgroveRegistration struct {
 	SubgroveID  string           `json:"subgrove_id"`
-	AppID       string           `json:"app_id"`
 	Name        string           `json:"name"`
 	Description string           `json:"description,omitempty"`
 	Schema      SchemaDefinition `json:"schema"`
@@ -158,7 +125,7 @@ type TokenInfo struct {
 	CirculatingSupply string `json:"circulating_supply"`
 }
 
-// BalanceInfo represents balance information for a DID or app.
+// BalanceInfo represents balance information for a DID.
 type BalanceInfo struct {
 	ID        string `json:"id"`
 	Balance   uint64 `json:"balance"`
@@ -169,7 +136,6 @@ type BalanceInfo struct {
 // FeeSchedule represents the fee schedule for operations.
 type FeeSchedule struct {
 	DidRegistration      string `json:"did_registration"`
-	AppRegistration      string `json:"app_registration"`
 	SubgroveRegistration string `json:"subgrove_registration"`
 	BaseTxCost           string `json:"base_tx_cost"`
 	CostPerByte          string `json:"cost_per_byte"`
@@ -411,7 +377,6 @@ type ApiResponse[T any] struct {
 // Permission represents a permission entry.
 type Permission struct {
 	Did        string   `json:"did"`
-	AppID      string   `json:"app_id"`
 	SubgroveID string   `json:"subgrove_id,omitempty"`
 	Actions    []string `json:"actions"`
 	GrantedBy  string   `json:"granted_by"`

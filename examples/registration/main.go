@@ -72,47 +72,13 @@ func main() {
 	client.SetIdentity(ed25519Identity)
 	fmt.Printf("   Identity set for: %s\n\n", ed25519Identity.DID())
 
-	// 4. List registered apps
-	fmt.Println("4. Listing registered apps...")
-	apps, err := client.Registration.ListApps(ctx)
-	if err != nil {
-		fmt.Printf("   Note: %v\n", err)
-	} else if len(apps) == 0 {
-		fmt.Println("   No apps registered yet")
-	} else {
-		fmt.Printf("   Found %d apps:\n", len(apps))
-		for i, app := range apps {
-			if i >= 5 {
-				fmt.Printf("   ... and %d more\n", len(apps)-5)
-				break
-			}
-			fmt.Printf("   - %s (%s)\n", app.Name, app.AppID)
-			fmt.Printf("     Owner: %s\n", app.OwnerDid)
-			fmt.Printf("     Type: %s\n", app.AppType)
-		}
-	}
-
-	// 5. Get a specific app
-	fmt.Println("\n5. Getting specific app...")
-	appID := "test-app"
-	app, err := client.Registration.GetApp(ctx, appID)
-	if err != nil {
-		fmt.Printf("   Note: %v (app may not exist)\n", err)
-	} else {
-		fmt.Printf("   App ID: %s\n", app.AppID)
-		fmt.Printf("   Name: %s\n", app.Name)
-		fmt.Printf("   Description: %s\n", app.Description)
-		fmt.Printf("   Owner: %s\n", app.OwnerDid)
-		fmt.Printf("   Admins: %v\n", app.Admins)
-	}
-
-	// 6. List subgroves for an app
-	fmt.Println("\n6. Listing subgroves for app...")
-	subgroves, err := client.Registration.ListSubgroves(ctx, appID)
+	// 4. List registered subgroves
+	fmt.Println("4. Listing registered subgroves...")
+	subgroves, err := client.Registration.ListSubgroves(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else if len(subgroves) == 0 {
-		fmt.Println("   No subgroves registered for this app")
+		fmt.Println("   No subgroves registered yet")
 	} else {
 		fmt.Printf("   Found %d subgroves:\n", len(subgroves))
 		for i, sg := range subgroves {
@@ -121,14 +87,15 @@ func main() {
 				break
 			}
 			fmt.Printf("   - %s (%s)\n", sg.Name, sg.SubgroveID)
+			fmt.Printf("     Owner: %s\n", sg.OwnerDid)
 			fmt.Printf("     Writers: %v\n", sg.Writers)
 		}
 	}
 
-	// 7. Get a specific subgrove
-	fmt.Println("\n7. Getting specific subgrove...")
+	// 5. Get a specific subgrove
+	fmt.Println("\n5. Getting specific subgrove...")
 	subgroveID := "test-subgrove"
-	sg, err := client.Registration.GetSubgrove(ctx, appID, subgroveID)
+	sg, err := client.Registration.GetSubgrove(ctx, subgroveID)
 	if err != nil {
 		fmt.Printf("   Note: %v (subgrove may not exist)\n", err)
 	} else {
@@ -141,15 +108,6 @@ func main() {
 	// 8. Demonstrate builders for registration requests
 	fmt.Println("\n8. Building registration requests (for reference)...")
 
-	// App registration request builder
-	appReq := willow.NewAppBuilder("my-app", "My Application").
-		Description("A sample application").
-		Type(willow.AppTypeStandard).
-		Owner(ed25519Identity.DID()).
-		AddAdmin(ed25519Identity.DID()).
-		Build()
-	fmt.Printf("   App request built: %s\n", appReq.AppID)
-
 	// Schema builder
 	schema := willow.NewSchemaBuilder("User").
 		Description("User profile schema").
@@ -161,7 +119,7 @@ func main() {
 	fmt.Printf("   Schema built: %s with %d fields\n", schema.Name, len(schema.Fields))
 
 	// Subgrove registration request builder
-	subgroveReq := willow.NewSubgroveBuilder("users", "my-app", "Users").
+	subgroveReq := willow.NewSubgroveBuilder("users", "Users").
 		Description("User profiles").
 		Schema(*schema).
 		Owner(ed25519Identity.DID()).
@@ -173,9 +131,8 @@ func main() {
 	fmt.Println("\n9. Registration summary...")
 	fmt.Println("   DID generation: willow.NewIdentity(algorithm)")
 	fmt.Println("   DID registration: client.RegisterDID(ctx, didDocument)")
-	fmt.Println("   Query apps: client.Registration.ListApps(ctx)")
-	fmt.Println("   Query subgroves: client.Registration.ListSubgroves(ctx, appID)")
-	fmt.Println("\n   Note: Creating apps and subgroves requires consensus transactions")
+	fmt.Println("   Query subgroves: client.Registration.ListSubgroves(ctx)")
+	fmt.Println("\n   Note: Creating subgroves requires consensus transactions")
 	fmt.Println("   Use the consensus.Client for registration operations.")
 
 	fmt.Println("\nRegistration example complete!")

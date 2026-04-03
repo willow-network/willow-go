@@ -14,7 +14,6 @@
 package willow
 
 import (
-	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -40,7 +39,7 @@ type ComputedFieldDefinition struct {
 // ComputedFieldSet is a set of computed field definitions for a dataset.
 type ComputedFieldSet []ComputedFieldDefinition
 
-// ComputedFieldRegistry is a registry of computed fields by app/dataset.
+// ComputedFieldRegistry is a registry of computed fields by dataset.
 type ComputedFieldRegistry struct {
 	mu       sync.RWMutex
 	registry map[string]ComputedFieldSet
@@ -53,39 +52,35 @@ func NewComputedFieldRegistry() *ComputedFieldRegistry {
 	}
 }
 
-// Register registers computed fields for a specific app/dataset combination.
-func (r *ComputedFieldRegistry) Register(appID, datasetID string, fields ComputedFieldSet) {
+// Register registers computed fields for a specific dataset.
+func (r *ComputedFieldRegistry) Register(datasetID string, fields ComputedFieldSet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := fmt.Sprintf("%s:%s", appID, datasetID)
-	r.registry[key] = fields
+	r.registry[datasetID] = fields
 }
 
-// Get returns computed fields for a specific app/dataset.
-func (r *ComputedFieldRegistry) Get(appID, datasetID string) (ComputedFieldSet, bool) {
+// Get returns computed fields for a specific dataset.
+func (r *ComputedFieldRegistry) Get(datasetID string) (ComputedFieldSet, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	key := fmt.Sprintf("%s:%s", appID, datasetID)
-	fields, ok := r.registry[key]
+	fields, ok := r.registry[datasetID]
 	return fields, ok
 }
 
-// Has checks if computed fields are registered for an app/dataset.
-func (r *ComputedFieldRegistry) Has(appID, datasetID string) bool {
+// Has checks if computed fields are registered for a dataset.
+func (r *ComputedFieldRegistry) Has(datasetID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	key := fmt.Sprintf("%s:%s", appID, datasetID)
-	_, ok := r.registry[key]
+	_, ok := r.registry[datasetID]
 	return ok
 }
 
-// Unregister removes computed fields for an app/dataset.
-func (r *ComputedFieldRegistry) Unregister(appID, datasetID string) bool {
+// Unregister removes computed fields for a dataset.
+func (r *ComputedFieldRegistry) Unregister(datasetID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	key := fmt.Sprintf("%s:%s", appID, datasetID)
-	_, existed := r.registry[key]
-	delete(r.registry, key)
+	_, existed := r.registry[datasetID]
+	delete(r.registry, datasetID)
 	return existed
 }
 

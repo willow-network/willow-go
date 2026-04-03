@@ -15,17 +15,17 @@ type DataOperations struct {
 }
 
 // Store stores data in a subgrove.
-func (d *DataOperations) Store(ctx context.Context, appID, subgroveID string, data map[string]interface{}) error {
+func (d *DataOperations) Store(ctx context.Context, subgroveID string, data map[string]interface{}) error {
 	if err := d.client.RequireAuth(); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("/data/%s/%s", appID, subgroveID)
+	path := fmt.Sprintf("/data/%s", subgroveID)
 	return d.client.post(ctx, path, data, nil)
 }
 
 // StoreItem stores a single item with a specified key.
-func (d *DataOperations) StoreItem(ctx context.Context, appID, subgroveID, key string, data map[string]interface{}) error {
+func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, data map[string]interface{}) error {
 	if err := d.client.RequireAuth(); err != nil {
 		return err
 	}
@@ -35,7 +35,7 @@ func (d *DataOperations) StoreItem(ctx context.Context, appID, subgroveID, key s
 		Data: data,
 	}
 
-	path := fmt.Sprintf("/data/%s/%s", appID, subgroveID)
+	path := fmt.Sprintf("/data/%s", subgroveID)
 	return d.client.post(ctx, path, req, nil)
 }
 
@@ -46,13 +46,13 @@ func (d *DataOperations) StoreItem(ctx context.Context, appID, subgroveID, key s
 //
 // Important: TODO: When mainnet/testnet launches, the light client will be
 // initialized with hardcoded checkpoint headers instead of trust-on-first-use.
-func (d *DataOperations) Get(ctx context.Context, appID, subgroveID, key string) (*DataResponse, error) {
+func (d *DataOperations) Get(ctx context.Context, subgroveID, key string) (*DataResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	// Get data with proof
-	path := fmt.Sprintf("/data/%s/%s/%s?include_proof=true", appID, subgroveID, key)
+	path := fmt.Sprintf("/data/%s/%s?include_proof=true", subgroveID, key)
 	var response DataResponse
 	if err := d.client.get(ctx, path, &response); err != nil {
 		return nil, err
@@ -70,12 +70,12 @@ func (d *DataOperations) Get(ctx context.Context, appID, subgroveID, key string)
 }
 
 // GetUnverified retrieves data without proof verification (faster).
-func (d *DataOperations) GetUnverified(ctx context.Context, appID, subgroveID, key string) (*DataResponse, error) {
+func (d *DataOperations) GetUnverified(ctx context.Context, subgroveID, key string) (*DataResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/data/%s/%s/%s", appID, subgroveID, key)
+	path := fmt.Sprintf("/data/%s/%s", subgroveID, key)
 	var response DataResponse
 	if err := d.client.get(ctx, path, &response); err != nil {
 		return nil, err
@@ -85,27 +85,27 @@ func (d *DataOperations) GetUnverified(ctx context.Context, appID, subgroveID, k
 }
 
 // Update updates existing data by key.
-func (d *DataOperations) Update(ctx context.Context, appID, subgroveID, key string, data map[string]interface{}) error {
+func (d *DataOperations) Update(ctx context.Context, subgroveID, key string, data map[string]interface{}) error {
 	if err := d.client.RequireAuth(); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("/data/%s/%s/%s", appID, subgroveID, key)
+	path := fmt.Sprintf("/data/%s/%s", subgroveID, key)
 	return d.client.put(ctx, path, data, nil)
 }
 
 // Delete deletes data by key.
-func (d *DataOperations) Delete(ctx context.Context, appID, subgroveID, key string) error {
+func (d *DataOperations) Delete(ctx context.Context, subgroveID, key string) error {
 	if err := d.client.RequireAuth(); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("/data/%s/%s/%s", appID, subgroveID, key)
+	path := fmt.Sprintf("/data/%s/%s", subgroveID, key)
 	return d.client.delete(ctx, path, nil)
 }
 
 // BatchStore stores multiple items in a single request.
-func (d *DataOperations) BatchStore(ctx context.Context, appID, subgroveID string, items []StoreRequest) error {
+func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, items []StoreRequest) error {
 	if err := d.client.RequireAuth(); err != nil {
 		return err
 	}
@@ -114,7 +114,7 @@ func (d *DataOperations) BatchStore(ctx context.Context, appID, subgroveID strin
 		Items: items,
 	}
 
-	path := fmt.Sprintf("/data/%s/%s/batch", appID, subgroveID)
+	path := fmt.Sprintf("/data/%s/batch", subgroveID)
 	return d.client.post(ctx, path, req, nil)
 }
 
@@ -125,7 +125,7 @@ func (d *DataOperations) BatchStore(ctx context.Context, appID, subgroveID strin
 //
 // Important: TODO: When mainnet/testnet launches, the light client will be
 // initialized with hardcoded checkpoint headers instead of trust-on-first-use.
-func (d *DataOperations) Query(ctx context.Context, appID, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
+func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func (d *DataOperations) Query(ctx context.Context, appID, subgroveID string, qu
 	// Always enable proof for trustless verification
 	query.IncludeProof = true
 
-	path := fmt.Sprintf("/query/%s/%s", appID, subgroveID)
+	path := fmt.Sprintf("/query/%s", subgroveID)
 	var response QueryResponse
 	if err := d.client.post(ctx, path, query, &response); err != nil {
 		return nil, err
@@ -147,8 +147,8 @@ func (d *DataOperations) Query(ctx context.Context, appID, subgroveID string, qu
 		}
 	}
 
-	// Apply computed fields if registered for this app/dataset
-	if fields, ok := d.client.computedFields.Get(appID, subgroveID); ok {
+	// Apply computed fields if registered for this dataset
+	if fields, ok := d.client.computedFields.Get(subgroveID); ok {
 		return ApplyComputedFieldsToResponse(&response, fields), nil
 	}
 
@@ -156,21 +156,21 @@ func (d *DataOperations) Query(ctx context.Context, appID, subgroveID string, qu
 }
 
 // QueryUnverified queries data without proof verification (faster).
-func (d *DataOperations) QueryUnverified(ctx context.Context, appID, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
+func (d *DataOperations) QueryUnverified(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	query.IncludeProof = false
 
-	path := fmt.Sprintf("/query/%s/%s", appID, subgroveID)
+	path := fmt.Sprintf("/query/%s", subgroveID)
 	var response QueryResponse
 	if err := d.client.post(ctx, path, query, &response); err != nil {
 		return nil, err
 	}
 
-	// Apply computed fields if registered for this app/dataset
-	if fields, ok := d.client.computedFields.Get(appID, subgroveID); ok {
+	// Apply computed fields if registered for this dataset
+	if fields, ok := d.client.computedFields.Get(subgroveID); ok {
 		return ApplyComputedFieldsToResponse(&response, fields), nil
 	}
 
@@ -178,12 +178,12 @@ func (d *DataOperations) QueryUnverified(ctx context.Context, appID, subgroveID 
 }
 
 // GetProof retrieves the proof for a specific key.
-func (d *DataOperations) GetProof(ctx context.Context, appID, subgroveID, key string) (*DataProof, error) {
+func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (*DataProof, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/proof/%s/%s/%s", appID, subgroveID, key)
+	path := fmt.Sprintf("/proof/%s/%s", subgroveID, key)
 	var proof DataProof
 	if err := d.client.get(ctx, path, &proof); err != nil {
 		return nil, err

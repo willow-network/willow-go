@@ -56,7 +56,6 @@ func main() {
 	fmt.Println("   Identity set — requests will be signed automatically")
 	fmt.Println()
 
-	appID := "proof-demo"
 	subgroveID := "test-data"
 
 	// 3. Store test data
@@ -67,7 +66,7 @@ func main() {
 		"tags":    []string{"demo", "proof", "verification"},
 	}
 
-	err = client.Data.StoreItem(ctx, appID, subgroveID, "test-key", testData)
+	err = client.Data.StoreItem(ctx, subgroveID, "test-key", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -84,7 +83,7 @@ func main() {
 	fmt.Println("   - Returns error if verification fails")
 	fmt.Println()
 
-	response, err := client.Data.Get(ctx, appID, subgroveID, "test-key")
+	response, err := client.Data.Get(ctx, subgroveID, "test-key")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -100,7 +99,7 @@ func main() {
 	fmt.Println("   Use only when you trust the node")
 	fmt.Println()
 
-	response, err = client.Data.GetUnverified(ctx, appID, subgroveID, "test-key")
+	response, err = client.Data.GetUnverified(ctx, subgroveID, "test-key")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -114,7 +113,7 @@ func main() {
 	fmt.Println("6. Query with automatic verification...")
 	query := willow.NewQueryBuilder().Limit(5).IncludeProof().Build()
 
-	queryResponse, err := client.Data.Query(ctx, appID, subgroveID, query)
+	queryResponse, err := client.Data.Query(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -129,7 +128,7 @@ func main() {
 	fmt.Println("7. Query without verification (unverified)...")
 	queryUnverified := willow.NewQueryBuilder().Limit(5).Build()
 
-	queryResponse, err = client.Data.QueryUnverified(ctx, appID, subgroveID, queryUnverified)
+	queryResponse, err = client.Data.QueryUnverified(ctx, subgroveID, queryUnverified)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -140,7 +139,7 @@ func main() {
 
 	// 8. Manual proof retrieval
 	fmt.Println("8. Manual proof retrieval...")
-	proof, err := client.Data.GetProof(ctx, appID, subgroveID, "test-key")
+	proof, err := client.Data.GetProof(ctx, subgroveID, "test-key")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {

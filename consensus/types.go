@@ -49,20 +49,6 @@ type RegisterDidTx struct {
 	Nonce       uint64      `json:"nonce"`
 }
 
-// RegisterAppTx represents an app registration transaction.
-type RegisterAppTx struct {
-	AppID          string   `json:"app_id"`
-	Name           string   `json:"name"`
-	Description    string   `json:"description,omitempty"`
-	AppType        string   `json:"app_type"`
-	OwnerDid       string   `json:"owner_did"`
-	Admins         []string `json:"admins,omitempty"`
-	InitialFunding *uint64  `json:"initial_funding,omitempty"`
-	Signature      []byte   `json:"signature"`
-	PublicKeyID    string   `json:"public_key_id"`
-	Nonce          uint64   `json:"nonce"`
-}
-
 // SubgroveDataStorage holds configuration for DataStorage mode.
 type SubgroveDataStorage struct {
 	Name                  string   `json:"name"`
@@ -96,7 +82,6 @@ type SubgroveMode struct {
 // RegisterSubgroveTx represents a subgrove registration transaction.
 type RegisterSubgroveTx struct {
 	SubgroveID  string        `json:"subgrove_id"`
-	AppID       string        `json:"app_id"`
 	Schema      string        `json:"schema"`
 	OwnerDid    string        `json:"owner_did"`
 	Mode        *SubgroveMode `json:"mode,omitempty"`
@@ -118,7 +103,6 @@ type TransferTx struct {
 
 // DataStoreTx represents a data storage transaction.
 type DataStoreTx struct {
-	AppID       string          `json:"app_id"`
 	SubgroveID  string          `json:"subgrove_id"`
 	Key         string          `json:"key"`
 	Data        json.RawMessage `json:"data"`
@@ -130,7 +114,6 @@ type DataStoreTx struct {
 
 // DataDeleteTx represents a data deletion transaction.
 type DataDeleteTx struct {
-	AppID       string `json:"app_id"`
 	SubgroveID  string `json:"subgrove_id"`
 	Key         string `json:"key"`
 	OwnerDid    string `json:"owner_did"`
@@ -139,10 +122,10 @@ type DataDeleteTx struct {
 	Nonce       uint64 `json:"nonce"`
 }
 
-// FundAppTx represents a transaction to fund an app.
-type FundAppTx struct {
+// FundSubgroveTx represents a transaction to fund a subgrove.
+type FundSubgroveTx struct {
 	FromDid     string `json:"from_did"`
-	AppID       string `json:"app_id"`
+	SubgroveID  string `json:"subgrove_id"`
 	Amount      uint64 `json:"amount"`
 	Signature   []byte `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`

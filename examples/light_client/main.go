@@ -94,7 +94,7 @@ func main() {
 		"verified":  true,
 	}
 
-	err = client.Data.StoreItem(ctx, "test-app", "secure-data", "entry-1", testData)
+	err = client.Data.StoreItem(ctx, "secure-data", "entry-1", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -108,7 +108,7 @@ func main() {
 	fmt.Println("   - GroveDB Merkle proof against consensus app_hash")
 	fmt.Println("   - Data integrity without trusting any single node")
 
-	response, err := client.Data.Get(ctx, "test-app", "secure-data", "entry-1")
+	response, err := client.Data.Get(ctx, "secure-data", "entry-1")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -121,7 +121,7 @@ func main() {
 	fmt.Println("\n7. Querying with trustless verification...")
 	query := willow.NewQueryBuilder().Limit(10).Build()
 
-	queryResponse, err := client.Data.Query(ctx, "test-app", "secure-data", query)
+	queryResponse, err := client.Data.Query(ctx, "secure-data", query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {

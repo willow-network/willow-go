@@ -284,16 +284,10 @@ func (i *Identity) SignRequest(method, path string) (map[string]string, error) {
 	}, nil
 }
 
-// FormatRegisterAppMessage formats the message to sign for app registration.
-func FormatRegisterAppMessage(req *RegisterAppRequest, nonce uint64) string {
-	return fmt.Sprintf("RegisterApp\nApp ID: %s\nName: %s\nDescription: %s\nApp Type: %s\nOwner: %s\nNonce: %d",
-		req.AppID, req.Name, req.Description, req.AppType, req.OwnerDid, nonce)
-}
-
 // FormatRegisterSubgroveMessage formats the message to sign for subgrove registration.
 func FormatRegisterSubgroveMessage(req *RegisterSubgroveRequest, nonce uint64) string {
-	return fmt.Sprintf("RegisterSubgrove\nSubgrove ID: %s\nApp ID: %s\nName: %s\nOwner: %s\nNonce: %d",
-		req.SubgroveID, req.AppID, req.Name, req.OwnerDid, nonce)
+	return fmt.Sprintf("RegisterSubgrove\nSubgrove ID: %s\nName: %s\nOwner: %s\nNonce: %d",
+		req.SubgroveID, req.Name, req.OwnerDid, nonce)
 }
 
 // FormatTransferMessage formats the message to sign for a transfer.
@@ -303,6 +297,6 @@ func FormatTransferMessage(req *TransferRequest, nonce uint64) string {
 }
 
 // FormatDataStoreMessage formats the message to sign for data storage.
-func FormatDataStoreMessage(appID, subgroveID, key string, data []byte) string {
-	return fmt.Sprintf("%s:%s:%s:%s", appID, subgroveID, key, string(data))
+func FormatDataStoreMessage(subgroveID, key string, data []byte) string {
+	return fmt.Sprintf("%s:%s:%s", subgroveID, key, string(data))
 }

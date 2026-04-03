@@ -426,7 +426,7 @@ func TestVerificationResult(t *testing.T) {
 		RootHash: "abcd1234",
 		Results: []QueryResult{
 			{
-				Path:  [][]byte{[]byte("apps"), []byte("my-app")},
+				Path:  [][]byte{[]byte("subgroves"), []byte("my-subgrove")},
 				Key:   []byte("key1"),
 				Value: []byte("value1"),
 			},

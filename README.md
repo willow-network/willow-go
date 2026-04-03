@@ -12,7 +12,7 @@ go get github.com/willow-network/willow-go
 
 - **Identity Management**: DID generation, registration, and authentication
 - **Data Operations**: Store, retrieve, update, and delete data with proof verification
-- **Application Management**: Register and manage apps and subgroves
+- **Subgrove Management**: Register and manage subgroves
 - **Token Operations**: Query balances and fee schedules
 - **GraphQL Indexing**: Query indexed blockchain data
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
@@ -117,32 +117,32 @@ if client.HasIdentity() {
 
 ```go
 // Store data
-err := client.Data.Store(ctx, "my-app", "users", map[string]interface{}{
+err := client.Data.Store(ctx, "users", map[string]interface{}{
     "name":  "Alice",
     "email": "alice@example.com",
 })
 
 // Store with specific key
-err := client.Data.StoreItem(ctx, "my-app", "users", "user-123", data)
+err := client.Data.StoreItem(ctx, "users", "user-123", data)
 
 // Get data (with automatic proof verification if light client enabled)
-response, err := client.Data.Get(ctx, "my-app", "users", "user-123")
+response, err := client.Data.Get(ctx, "users", "user-123")
 
 // Get without verification (faster)
-response, err := client.Data.GetUnverified(ctx, "my-app", "users", "user-123")
+response, err := client.Data.GetUnverified(ctx, "users", "user-123")
 
 // Update data
-err := client.Data.Update(ctx, "my-app", "users", "user-123", updatedData)
+err := client.Data.Update(ctx, "users", "user-123", updatedData)
 
 // Delete data
-err := client.Data.Delete(ctx, "my-app", "users", "user-123")
+err := client.Data.Delete(ctx, "users", "user-123")
 
 // Batch store
 items := []willow.StoreRequest{
     {Key: "user-1", Data: user1Data},
     {Key: "user-2", Data: user2Data},
 }
-err := client.Data.BatchStore(ctx, "my-app", "users", items)
+err := client.Data.BatchStore(ctx, "users", items)
 ```
 
 ### Querying Data
@@ -156,28 +156,19 @@ query := willow.NewQueryBuilder().
     Limit(10).
     Build()
 
-response, err := client.Data.Query(ctx, "my-app", "users", query)
+response, err := client.Data.Query(ctx, "users", query)
 
 // Full-text search
 query := willow.NewQueryBuilder().
     Search([]string{"name", "bio"}, "developer").
     Build()
 
-response, err := client.Data.Query(ctx, "my-app", "users", query)
+response, err := client.Data.Query(ctx, "users", query)
 ```
 
-### Application & Subgrove Management
+### Subgrove Management
 
 ```go
-// Register an app using builder
-appReq := willow.NewAppBuilder("my-app", "My Application").
-    Description("A sample application").
-    Type(willow.AppTypeStandard).
-    Owner(identity.DID()).
-    Build()
-
-app, err := client.Registration.RegisterApp(ctx, appReq)
-
 // Create a schema using builder
 schema := willow.NewSchemaBuilder("User").
     Description("User profile schema").
@@ -188,7 +179,7 @@ schema := willow.NewSchemaBuilder("User").
     Build()
 
 // Register a subgrove
-subgroveReq := willow.NewSubgroveBuilder("users", "my-app", "Users").
+subgroveReq := willow.NewSubgroveBuilder("users", "Users").
     Description("User profiles").
     Schema(*schema).
     Owner(identity.DID()).
@@ -259,7 +250,7 @@ client, err := willow.NewClient("http://localhost:3031",
 )
 
 // Now all Get/Query operations automatically verify proofs!
-response, err := client.Data.Get(ctx, "my-app", "users", "user-123")
+response, err := client.Data.Get(ctx, "users", "user-123")
 // Proof is verified against the light client's trusted state
 ```
 
@@ -313,7 +304,7 @@ storageFee, err := client.Token.EstimateStorageFee(ctx, 1024) // 1KB write
 ## Error Handling
 
 ```go
-response, err := client.Data.Get(ctx, "my-app", "users", "user-123")
+response, err := client.Data.Get(ctx, "users", "user-123")
 if err != nil {
     // Check error types
     if willow.IsNotFound(err) {
@@ -365,7 +356,7 @@ go run ./examples/data_operations
 # Light client - Trustless verification with multiple validators
 go run ./examples/light_client
 
-# Registration - DIDs, apps, subgroves
+# Registration - DIDs, subgroves
 go run ./examples/registration
 
 # GraphQL indexing - Query indexed blockchain data

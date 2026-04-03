@@ -49,8 +49,8 @@ func main() {
 		fmt.Printf("   Token Name: %s\n", tokenInfo.Name)
 		fmt.Printf("   Symbol: %s\n", tokenInfo.Symbol)
 		fmt.Printf("   Decimals: %d\n", tokenInfo.Decimals)
-		fmt.Printf("   Total Supply: %d\n", tokenInfo.TotalSupply)
-		fmt.Printf("   Circulating Supply: %d\n\n", tokenInfo.CirculatingSupply)
+		fmt.Printf("   Genesis Supply: %s\n", tokenInfo.GenesisSupply)
+		fmt.Printf("   Circulating Supply: %s\n\n", tokenInfo.CirculatingSupply)
 	}
 
 	// 2. Get balance for a DID
@@ -75,20 +75,8 @@ func main() {
 		fmt.Printf("   Balance for %s: %d\n\n", targetDID, balance.Balance)
 	}
 
-	// 4. Get app balance
-	fmt.Println("4. Getting balance for an app...")
-	appID := "my-app"
-	appBalance, err := client.Token.GetAppBalance(ctx, appID)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Printf("   App: %s\n", appID)
-		fmt.Printf("   Balance: %d\n", appBalance.Balance)
-		fmt.Printf("   Available: %d\n\n", appBalance.Available)
-	}
-
-	// 5. Get fee schedule
-	fmt.Println("5. Getting fee schedule...")
+	// 4. Get fee schedule
+	fmt.Println("4. Getting fee schedule...")
 	fees, err := client.Token.GetFeeSchedule(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
@@ -101,8 +89,8 @@ func main() {
 		fmt.Printf("   Max Data Payload: %d bytes\n\n", fees.MaxDataPayloadBytes)
 	}
 
-	// 6. Estimate storage fee
-	fmt.Println("6. Estimating storage fees...")
+	// 5. Estimate storage fee
+	fmt.Println("5. Estimating storage fees...")
 	sizes := []uint64{1024, 10240, 102400, 1048576} // 1KB, 10KB, 100KB, 1MB
 	for _, size := range sizes {
 		fee, err := client.Token.EstimateStorageFee(ctx, size)
@@ -110,23 +98,20 @@ func main() {
 			fmt.Printf("   Note: %v\n", err)
 			break
 		}
-		fmt.Printf("   %s: %d WILL\n", formatSize(size), fee)
+		fmt.Printf("   %s: %s\n", formatSize(size), fee)
 	}
 
-	// 7. Estimate query fee
-	fmt.Println("\n7. Estimating query fees...")
-	resultCounts := []uint64{10, 100, 1000}
-	for _, count := range resultCounts {
-		fee, err := client.Token.EstimateQueryFee(ctx, count)
-		if err != nil {
-			fmt.Printf("   Note: %v\n", err)
-			break
-		}
-		fmt.Printf("   %d results: %d WILL\n", count, fee)
+	// 6. Estimate query fee
+	fmt.Println("\n6. Estimating query fee...")
+	queryFee, err := client.Token.EstimateQueryFee(ctx)
+	if err != nil {
+		fmt.Printf("   Note: %v\n", err)
+	} else {
+		fmt.Printf("   Query fee: %s\n", queryFee)
 	}
 
-	// 8. List validators
-	fmt.Println("\n8. Listing validators...")
+	// 7. List validators
+	fmt.Println("\n7. Listing validators...")
 	validators, err := client.Validators.List(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
@@ -143,8 +128,8 @@ func main() {
 		}
 	}
 
-	// 9. Get active validators
-	fmt.Println("\n9. Getting active validators only...")
+	// 8. Get active validators
+	fmt.Println("\n8. Getting active validators only...")
 	activeValidators, err := client.Validators.GetActive(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
@@ -152,8 +137,8 @@ func main() {
 		fmt.Printf("   Active validators: %d\n", len(activeValidators))
 	}
 
-	// 10. Get total voting power
-	fmt.Println("\n10. Getting total voting power...")
+	// 9. Get total voting power
+	fmt.Println("\n9. Getting total voting power...")
 	totalPower, err := client.Validators.GetTotalVotingPower(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
@@ -161,15 +146,14 @@ func main() {
 		fmt.Printf("   Total voting power: %d\n", totalPower)
 	}
 
-	// 11. Summary of token operations
-	fmt.Println("\n11. Token operations summary...")
+	// 10. Summary of token operations
+	fmt.Println("\n10. Token operations summary...")
 	fmt.Println("   Token info: client.Token.GetInfo(ctx)")
 	fmt.Println("   Get balance: client.Token.GetBalance(ctx, did)")
 	fmt.Println("   Get my balance: client.Token.GetMyBalance(ctx)")
-	fmt.Println("   Get app balance: client.Token.GetAppBalance(ctx, appID)")
 	fmt.Println("   Fee schedule: client.Token.GetFeeSchedule(ctx)")
 	fmt.Println("   Estimate storage: client.Token.EstimateStorageFee(ctx, bytes)")
-	fmt.Println("   Estimate query: client.Token.EstimateQueryFee(ctx, results)")
+	fmt.Println("   Estimate query: client.Token.EstimateQueryFee(ctx)")
 	fmt.Println("\n   Note: Token transfers require consensus transactions")
 	fmt.Println("   Use the consensus.Client for transfer operations.")
 

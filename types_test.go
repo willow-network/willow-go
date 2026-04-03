@@ -38,15 +38,6 @@ func TestIndexTypes(t *testing.T) {
 	}
 }
 
-func TestAppTypes(t *testing.T) {
-	if AppTypeStandard != "standard" {
-		t.Errorf("Expected AppTypeStandard 'standard', got '%s'", AppTypeStandard)
-	}
-	if AppTypeIndexer != "indexer" {
-		t.Errorf("Expected AppTypeIndexer 'indexer', got '%s'", AppTypeIndexer)
-	}
-}
-
 func TestValidatorStatus(t *testing.T) {
 	if ValidatorStatusActive != "active" {
 		t.Errorf("Expected ValidatorStatusActive 'active', got '%s'", ValidatorStatusActive)
@@ -158,35 +149,6 @@ func TestQueryBuilderPagination(t *testing.T) {
 	}
 }
 
-func TestAppBuilder(t *testing.T) {
-	req := NewAppBuilder("my-app", "My Application").
-		Description("A test app").
-		Type(AppTypeIndexer).
-		Owner("did:willow:Ed25519:owner").
-		AddAdmin("did:willow:Ed25519:admin1").
-		AddAdmin("did:willow:Ed25519:admin2").
-		Build()
-
-	if req.AppID != "my-app" {
-		t.Errorf("Expected AppID 'my-app', got '%s'", req.AppID)
-	}
-	if req.Name != "My Application" {
-		t.Errorf("Expected Name 'My Application', got '%s'", req.Name)
-	}
-	if req.Description != "A test app" {
-		t.Errorf("Expected Description 'A test app', got '%s'", req.Description)
-	}
-	if req.AppType != AppTypeIndexer {
-		t.Errorf("Expected AppType 'indexer', got '%s'", req.AppType)
-	}
-	if req.OwnerDid != "did:willow:Ed25519:owner" {
-		t.Errorf("Expected OwnerDid 'did:willow:Ed25519:owner', got '%s'", req.OwnerDid)
-	}
-	if len(req.Admins) != 2 {
-		t.Errorf("Expected 2 admins, got %d", len(req.Admins))
-	}
-}
-
 func TestSchemaBuilder(t *testing.T) {
 	schema := NewSchemaBuilder("User").
 		Description("User profile").
@@ -254,7 +216,7 @@ func TestSubgroveBuilder(t *testing.T) {
 		StringField("name", true).
 		Build()
 
-	req := NewSubgroveBuilder("users", "my-app", "Users").
+	req := NewSubgroveBuilder("users", "Users").
 		Description("User profiles").
 		Schema(*schema).
 		Owner("did:willow:Ed25519:owner").
@@ -265,9 +227,6 @@ func TestSubgroveBuilder(t *testing.T) {
 
 	if req.SubgroveID != "users" {
 		t.Errorf("Expected SubgroveID 'users', got '%s'", req.SubgroveID)
-	}
-	if req.AppID != "my-app" {
-		t.Errorf("Expected AppID 'my-app', got '%s'", req.AppID)
 	}
 	if req.Name != "Users" {
 		t.Errorf("Expected Name 'Users', got '%s'", req.Name)

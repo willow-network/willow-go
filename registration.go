@@ -5,92 +5,19 @@ import (
 	"fmt"
 )
 
-// RegistrationOperations provides methods for app and subgrove registration.
+// RegistrationOperations provides methods for subgrove registration.
 type RegistrationOperations struct {
 	client *Client
 }
 
-// RegisterApp registers a new application.
-func (r *RegistrationOperations) RegisterApp(ctx context.Context, req *RegisterAppRequest) (*AppRegistration, error) {
-	if err := r.client.RequireAuth(); err != nil {
-		return nil, err
-	}
-
-	var result AppRegistration
-	err := r.client.post(ctx, "/apps", req, &result)
-	if err != nil {
-		return nil, err
-	}
-
-	return &result, nil
-}
-
-// GetApp retrieves information about an app.
-func (r *RegistrationOperations) GetApp(ctx context.Context, appID string) (*AppRegistration, error) {
-	var result AppRegistration
-	err := r.client.get(ctx, fmt.Sprintf("/apps/%s", appID), &result)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// ListApps lists all registered applications.
-func (r *RegistrationOperations) ListApps(ctx context.Context) ([]AppRegistration, error) {
-	var results []AppRegistration
-	err := r.client.get(ctx, "/apps", &results)
-	if err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-// ListMyApps lists apps owned by the authenticated user.
-func (r *RegistrationOperations) ListMyApps(ctx context.Context) ([]AppRegistration, error) {
-	if err := r.client.RequireAuth(); err != nil {
-		return nil, err
-	}
-
-	var results []AppRegistration
-	err := r.client.get(ctx, "/apps?owned=true", &results)
-	if err != nil {
-		return nil, err
-	}
-	return results, nil
-}
-
-// UpdateApp updates an existing application.
-func (r *RegistrationOperations) UpdateApp(ctx context.Context, appID string, updates map[string]interface{}) (*AppRegistration, error) {
-	if err := r.client.RequireAuth(); err != nil {
-		return nil, err
-	}
-
-	var result AppRegistration
-	err := r.client.put(ctx, fmt.Sprintf("/apps/%s", appID), updates, &result)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
-}
-
-// DeleteApp deletes an application.
-func (r *RegistrationOperations) DeleteApp(ctx context.Context, appID string) error {
-	if err := r.client.RequireAuth(); err != nil {
-		return err
-	}
-
-	return r.client.delete(ctx, fmt.Sprintf("/apps/%s", appID), nil)
-}
-
-// RegisterSubgrove registers a new subgrove within an app.
+// RegisterSubgrove registers a new subgrove.
 func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*SubgroveRegistration, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	var result SubgroveRegistration
-	path := fmt.Sprintf("/apps/%s/subgroves", req.AppID)
-	err := r.client.post(ctx, path, req, &result)
+	err := r.client.post(ctx, "/subgroves", req, &result)
 	if err != nil {
 		return nil, err
 	}
@@ -99,9 +26,9 @@ func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *Regi
 }
 
 // GetSubgrove retrieves information about a subgrove.
-func (r *RegistrationOperations) GetSubgrove(ctx context.Context, appID, subgroveID string) (*SubgroveRegistration, error) {
+func (r *RegistrationOperations) GetSubgrove(ctx context.Context, subgroveID string) (*SubgroveRegistration, error) {
 	var result SubgroveRegistration
-	path := fmt.Sprintf("/apps/%s/subgroves/%s", appID, subgroveID)
+	path := fmt.Sprintf("/subgroves/%s", subgroveID)
 	err := r.client.get(ctx, path, &result)
 	if err != nil {
 		return nil, err
@@ -109,11 +36,10 @@ func (r *RegistrationOperations) GetSubgrove(ctx context.Context, appID, subgrov
 	return &result, nil
 }
 
-// ListSubgroves lists all subgroves for an app.
-func (r *RegistrationOperations) ListSubgroves(ctx context.Context, appID string) ([]SubgroveRegistration, error) {
+// ListSubgroves lists all subgroves.
+func (r *RegistrationOperations) ListSubgroves(ctx context.Context) ([]SubgroveRegistration, error) {
 	var results []SubgroveRegistration
-	path := fmt.Sprintf("/apps/%s/subgroves", appID)
-	err := r.client.get(ctx, path, &results)
+	err := r.client.get(ctx, "/subgroves", &results)
 	if err != nil {
 		return nil, err
 	}
@@ -121,13 +47,13 @@ func (r *RegistrationOperations) ListSubgroves(ctx context.Context, appID string
 }
 
 // UpdateSubgrove updates an existing subgrove.
-func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, appID, subgroveID string, updates map[string]interface{}) (*SubgroveRegistration, error) {
+func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, subgroveID string, updates map[string]interface{}) (*SubgroveRegistration, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	var result SubgroveRegistration
-	path := fmt.Sprintf("/apps/%s/subgroves/%s", appID, subgroveID)
+	path := fmt.Sprintf("/subgroves/%s", subgroveID)
 	err := r.client.put(ctx, path, updates, &result)
 	if err != nil {
 		return nil, err
@@ -136,12 +62,12 @@ func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, appID, subg
 }
 
 // DeleteSubgrove deletes a subgrove.
-func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, appID, subgroveID string) error {
+func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string) error {
 	if err := r.client.RequireAuth(); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("/apps/%s/subgroves/%s", appID, subgroveID)
+	path := fmt.Sprintf("/subgroves/%s", subgroveID)
 	return r.client.delete(ctx, path, nil)
 }
 
@@ -166,67 +92,13 @@ func (r *RegistrationOperations) GrantPermission(ctx context.Context, permission
 }
 
 // RevokePermission revokes a permission from a DID.
-func (r *RegistrationOperations) RevokePermission(ctx context.Context, did, appID, subgroveID string) error {
+func (r *RegistrationOperations) RevokePermission(ctx context.Context, did, subgroveID string) error {
 	if err := r.client.RequireAuth(); err != nil {
 		return err
 	}
 
-	path := fmt.Sprintf("/permissions/%s/%s", did, appID)
-	if subgroveID != "" {
-		path = fmt.Sprintf("%s/%s", path, subgroveID)
-	}
+	path := fmt.Sprintf("/permissions/%s/%s", did, subgroveID)
 	return r.client.delete(ctx, path, nil)
-}
-
-// AppBuilder provides a fluent interface for building app registrations.
-type AppBuilder struct {
-	req *RegisterAppRequest
-}
-
-// NewAppBuilder creates a new AppBuilder.
-func NewAppBuilder(appID, name string) *AppBuilder {
-	return &AppBuilder{
-		req: &RegisterAppRequest{
-			AppID:   appID,
-			Name:    name,
-			AppType: AppTypeStandard,
-		},
-	}
-}
-
-// Description sets the app description.
-func (b *AppBuilder) Description(desc string) *AppBuilder {
-	b.req.Description = desc
-	return b
-}
-
-// Type sets the app type.
-func (b *AppBuilder) Type(appType AppType) *AppBuilder {
-	b.req.AppType = appType
-	return b
-}
-
-// Owner sets the owner DID.
-func (b *AppBuilder) Owner(did string) *AppBuilder {
-	b.req.OwnerDid = did
-	return b
-}
-
-// Admins sets the admin DIDs.
-func (b *AppBuilder) Admins(dids []string) *AppBuilder {
-	b.req.Admins = dids
-	return b
-}
-
-// AddAdmin adds an admin DID.
-func (b *AppBuilder) AddAdmin(did string) *AppBuilder {
-	b.req.Admins = append(b.req.Admins, did)
-	return b
-}
-
-// Build returns the constructed RegisterAppRequest.
-func (b *AppBuilder) Build() *RegisterAppRequest {
-	return b.req
 }
 
 // SubgroveBuilder provides a fluent interface for building subgrove registrations.
@@ -235,11 +107,10 @@ type SubgroveBuilder struct {
 }
 
 // NewSubgroveBuilder creates a new SubgroveBuilder.
-func NewSubgroveBuilder(subgroveID, appID, name string) *SubgroveBuilder {
+func NewSubgroveBuilder(subgroveID, name string) *SubgroveBuilder {
 	return &SubgroveBuilder{
 		req: &RegisterSubgroveRequest{
 			SubgroveID: subgroveID,
-			AppID:      appID,
 			Name:       name,
 		},
 	}

@@ -57,7 +57,7 @@ func main() {
 	client.SetIdentity(identity)
 	fmt.Println("   Identity set — all requests will be signed automatically")
 
-	// 5. Store data (requires an existing app and subgrove)
+	// 5. Store data (requires an existing subgrove)
 	fmt.Println("5. Storing data...")
 	testData := map[string]interface{}{
 		"name":   "Alice",
@@ -65,7 +65,7 @@ func main() {
 		"active": true,
 	}
 
-	err = client.Data.StoreItem(ctx, "my-app", "users", "alice", testData)
+	err = client.Data.StoreItem(ctx, "users", "alice", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -74,7 +74,7 @@ func main() {
 
 	// 6. Retrieve data with automatic proof verification
 	fmt.Println("\n6. Retrieving data (with proof verification)...")
-	response, err := client.Data.Get(ctx, "my-app", "users", "alice")
+	response, err := client.Data.Get(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -85,7 +85,7 @@ func main() {
 
 	// 7. Retrieve data without verification (faster)
 	fmt.Println("\n7. Retrieving data (without verification)...")
-	response, err = client.Data.GetUnverified(ctx, "my-app", "users", "alice")
+	response, err = client.Data.GetUnverified(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {

@@ -55,7 +55,7 @@ type FileOperations struct {
 
 // Upload uploads a file to a FileStorage subgrove.
 // If signing is non-nil, the transaction will be signed with the provided credentials.
-func (f *FileOperations) Upload(appID, subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
+func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
 	chunkSize := DefaultChunkSize
 	chunks := chunkData(data, chunkSize)
 	chunkCount := len(chunks)
@@ -79,8 +79,8 @@ func (f *FileOperations) Upload(appID, subgroveID, fileKey, filename string, dat
 		publicKeyID = signing.PublicKeyID
 		nonce = signing.Nonce
 
-		message := fmt.Sprintf("store_file:%s:%s:%s:%s:%d",
-			appID, subgroveID, fileKey, contentHashHex, len(data))
+		message := fmt.Sprintf("store_file:%s:%s:%s:%d",
+			subgroveID, fileKey, contentHashHex, len(data))
 		sig, err := signing.SignFunc([]byte(message))
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
@@ -91,7 +91,6 @@ func (f *FileOperations) Upload(appID, subgroveID, fileKey, filename string, dat
 	// Submit StoreFileManifestTx to consensus
 	manifestTx := map[string]interface{}{
 		"StoreFileManifest": map[string]interface{}{
-			"app_id":            appID,
 			"subgrove_id":       subgroveID,
 			"file_key":          fileKey,
 			"filename":          filename,
@@ -126,8 +125,8 @@ func (f *FileOperations) Upload(appID, subgroveID, fileKey, filename string, dat
 
 	// Upload chunks to storage node
 	for i, chunk := range chunks {
-		url := fmt.Sprintf("%s/upload/%s/%s/%s?chunk_index=%d&chunk_count=%d&content_hash=%s",
-			storageNodeEndpoint, appID, subgroveID, fileKey, i, chunkCount, contentHashHex)
+		url := fmt.Sprintf("%s/upload/%s/%s?chunk_index=%d&chunk_count=%d&content_hash=%s",
+			storageNodeEndpoint, subgroveID, fileKey, i, chunkCount, contentHashHex)
 		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(chunk))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload chunk %d: %w", i, err)
@@ -149,8 +148,8 @@ func (f *FileOperations) Upload(appID, subgroveID, fileKey, filename string, dat
 }
 
 // Download downloads a file from a FileStorage subgrove.
-func (f *FileOperations) Download(appID, subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
-	manifest, err := f.Metadata(appID, subgroveID, fileKey)
+func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
+	manifest, err := f.Metadata(subgroveID, fileKey)
 	if err != nil {
 		return nil, err
 	}
@@ -158,8 +157,8 @@ func (f *FileOperations) Download(appID, subgroveID, fileKey, storageNodeEndpoin
 	var fileData []byte
 	var chunkHashes [][32]byte
 	for i := uint32(0); i < manifest.ChunkCount; i++ {
-		url := fmt.Sprintf("%s/chunk/%s/%s/%s/%d?content_hash=%s",
-			storageNodeEndpoint, appID, subgroveID, fileKey, i, manifest.ContentHash)
+		url := fmt.Sprintf("%s/chunk/%s/%s/%d?content_hash=%s",
+			storageNodeEndpoint, subgroveID, fileKey, i, manifest.ContentHash)
 		resp, err := http.Get(url)
 		if err != nil {
 			return nil, fmt.Errorf("failed to download chunk %d: %w", i, err)
@@ -189,8 +188,8 @@ func (f *FileOperations) Download(appID, subgroveID, fileKey, storageNodeEndpoin
 }
 
 // Metadata gets file manifest metadata from the validator API.
-func (f *FileOperations) Metadata(appID, subgroveID, fileKey string) (*FileManifest, error) {
-	url := fmt.Sprintf("%s/files/%s/%s/%s", f.client.baseURL.String(), appID, subgroveID, fileKey)
+func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, error) {
+	url := fmt.Sprintf("%s/files/%s/%s", f.client.baseURL.String(), subgroveID, fileKey)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -209,8 +208,8 @@ func (f *FileOperations) Metadata(appID, subgroveID, fileKey string) (*FileManif
 }
 
 // List lists all files in a subgrove.
-func (f *FileOperations) List(appID, subgroveID string) ([]FileManifest, error) {
-	url := fmt.Sprintf("%s/files/%s/%s", f.client.baseURL.String(), appID, subgroveID)
+func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
+	url := fmt.Sprintf("%s/files/%s", f.client.baseURL.String(), subgroveID)
 	resp, err := http.Get(url)
 	if err != nil {
 		return nil, err
@@ -226,7 +225,7 @@ func (f *FileOperations) List(appID, subgroveID string) ([]FileManifest, error) 
 
 // Delete deletes a file (submits DeleteFileManifestTx to consensus).
 // If signing is non-nil, the transaction will be signed with the provided credentials.
-func (f *FileOperations) Delete(appID, subgroveID, fileKey string, signing *FileSigningOptions) error {
+func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigningOptions) error {
 	ownerDID := ""
 	signature := ""
 	publicKeyID := ""
@@ -237,8 +236,8 @@ func (f *FileOperations) Delete(appID, subgroveID, fileKey string, signing *File
 		publicKeyID = signing.PublicKeyID
 		nonce = signing.Nonce
 
-		message := fmt.Sprintf("delete_file:%s:%s:%s",
-			appID, subgroveID, fileKey)
+		message := fmt.Sprintf("delete_file:%s:%s",
+			subgroveID, fileKey)
 		sig, err := signing.SignFunc([]byte(message))
 		if err != nil {
 			return fmt.Errorf("failed to sign delete file tx: %w", err)
@@ -248,7 +247,6 @@ func (f *FileOperations) Delete(appID, subgroveID, fileKey string, signing *File
 
 	deleteTx := map[string]interface{}{
 		"DeleteFileManifest": map[string]interface{}{
-			"app_id":        appID,
 			"subgrove_id":   subgroveID,
 			"file_key":      fileKey,
 			"owner_did":     ownerDID,

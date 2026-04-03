@@ -62,7 +62,7 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 }
 
 // SqlQuery executes a SQL query against a subgrove
-func (i *IndexingOperations) SqlQuery(ctx context.Context, appID, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
+func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
 	req := SqlRequest{
 		Query:        query,
 		IncludeProof: &includeProof,
@@ -73,7 +73,7 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, appID, subgroveID, qu
 		return nil, fmt.Errorf("failed to marshal SQL request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/sql/%s/%s", i.client.baseURL.String(), appID, subgroveID)
+	url := fmt.Sprintf("%s/sql/%s", i.client.baseURL.String(), subgroveID)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)

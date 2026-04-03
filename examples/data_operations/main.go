@@ -43,7 +43,6 @@ func main() {
 	client.SetIdentity(identity)
 	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
-	appID := "example-app"
 	subgroveID := "products"
 
 	// 1. Store single item
@@ -55,7 +54,7 @@ func main() {
 		"in_stock": true,
 	}
 
-	err = client.Data.StoreItem(ctx, appID, subgroveID, "product-1", product1)
+	err = client.Data.StoreItem(ctx, subgroveID, "product-1", product1)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -94,7 +93,7 @@ func main() {
 		},
 	}
 
-	err = client.Data.BatchStore(ctx, appID, subgroveID, items)
+	err = client.Data.BatchStore(ctx, subgroveID, items)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -103,7 +102,7 @@ func main() {
 
 	// 3. Get with proof verification (secure by default)
 	fmt.Println("\n3. Get with proof verification...")
-	response, err := client.Data.Get(ctx, appID, subgroveID, "product-1")
+	response, err := client.Data.Get(ctx, subgroveID, "product-1")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -114,7 +113,7 @@ func main() {
 
 	// 4. Get without verification (faster)
 	fmt.Println("\n4. Get without verification (unverified)...")
-	response, err = client.Data.GetUnverified(ctx, appID, subgroveID, "product-2")
+	response, err = client.Data.GetUnverified(ctx, subgroveID, "product-2")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -133,7 +132,7 @@ func main() {
 		"updated":  true,
 	}
 
-	err = client.Data.Update(ctx, appID, subgroveID, "product-1", updatedProduct)
+	err = client.Data.Update(ctx, subgroveID, "product-1", updatedProduct)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -148,7 +147,7 @@ func main() {
 		Limit(10).
 		Build()
 
-	queryResponse, err := client.Data.Query(ctx, appID, subgroveID, query)
+	queryResponse, err := client.Data.Query(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -163,7 +162,7 @@ func main() {
 	fmt.Println("\n7. Query without verification...")
 	query = willow.NewQueryBuilder().Limit(5).Build()
 
-	queryResponse, err = client.Data.QueryUnverified(ctx, appID, subgroveID, query)
+	queryResponse, err = client.Data.QueryUnverified(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -172,7 +171,7 @@ func main() {
 
 	// 8. Delete data
 	fmt.Println("\n8. Deleting data...")
-	err = client.Data.Delete(ctx, appID, subgroveID, "product-3")
+	err = client.Data.Delete(ctx, subgroveID, "product-3")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {

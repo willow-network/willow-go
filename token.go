@@ -30,16 +30,6 @@ func (t *TokenOperations) GetBalance(ctx context.Context, did string) (*BalanceI
 	return &info, nil
 }
 
-// GetAppBalance retrieves the balance for an app.
-func (t *TokenOperations) GetAppBalance(ctx context.Context, appID string) (*BalanceInfo, error) {
-	var info BalanceInfo
-	err := t.client.get(ctx, fmt.Sprintf("/token/balance/app/%s", appID), &info)
-	if err != nil {
-		return nil, err
-	}
-	return &info, nil
-}
-
 // GetMyBalance retrieves the balance for the authenticated user.
 func (t *TokenOperations) GetMyBalance(ctx context.Context) (*BalanceInfo, error) {
 	if err := t.client.RequireAuth(); err != nil {

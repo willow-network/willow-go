@@ -122,13 +122,13 @@ type PrivacyOperations struct {
 
 // GetMyKeyGrant retrieves the encryption key grant for the authenticated DID,
 // allowing it to decrypt the subgrove's data.
-func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, appID, subgroveID string) (*EncryptedKeyGrant, error) {
+func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, subgroveID string) (*EncryptedKeyGrant, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-	path := fmt.Sprintf("/key-grants/%s/%s/%s", appID, subgroveID, identity.DID())
+	path := fmt.Sprintf("/key-grants/%s/%s", subgroveID, identity.DID())
 	var grant EncryptedKeyGrant
 	if err := p.client.get(ctx, path, &grant); err != nil {
 		return nil, err
@@ -138,12 +138,12 @@ func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, appID, subgroveID
 
 // ListKeyGrantees retrieves the list of DIDs that have been granted access
 // to a subgrove's encryption key. Only the subgrove owner or admin can call this.
-func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, appID, subgroveID string) ([]string, error) {
+func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, subgroveID string) ([]string, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/key-grants/%s/%s", appID, subgroveID)
+	path := fmt.Sprintf("/key-grants/%s", subgroveID)
 	var grantees []string
 	if err := p.client.get(ctx, path, &grantees); err != nil {
 		return nil, err
@@ -153,8 +153,8 @@ func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, appID, subgrove
 
 // GetKeyGrantProof retrieves the GroveDB Merkle proof for a key grant.
 // This is a public endpoint since proofs are non-sensitive.
-func (p *PrivacyOperations) GetKeyGrantProof(ctx context.Context, appID, subgroveID, did string) (json.RawMessage, error) {
-	path := fmt.Sprintf("/proof/key-grant/%s/%s/%s", appID, subgroveID, did)
+func (p *PrivacyOperations) GetKeyGrantProof(ctx context.Context, subgroveID, did string) (json.RawMessage, error) {
+	path := fmt.Sprintf("/proof/key-grant/%s/%s", subgroveID, did)
 	var proof json.RawMessage
 	if err := p.client.get(ctx, path, &proof); err != nil {
 		return nil, err
@@ -164,7 +164,6 @@ func (p *PrivacyOperations) GetKeyGrantProof(ctx context.Context, appID, subgrov
 
 // grantSubgroveKeyRequest is the internal request body for the GrantSubgroveKey transaction.
 type grantSubgroveKeyRequest struct {
-	AppID             string            `json:"app_id"`
 	SubgroveID        string            `json:"subgrove_id"`
 	EncryptedKeyGrant EncryptedKeyGrant `json:"encrypted_key_grant"`
 	SenderDID         string            `json:"sender_did"`
@@ -175,7 +174,7 @@ type grantSubgroveKeyRequest struct {
 
 // GrantSubgroveKey broadcasts a GrantSubgroveKey transaction, granting the
 // specified DID access to the subgrove's encryption key.
-func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, appID, subgroveID string, grant EncryptedKeyGrant) error {
+func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant) error {
 	if err := p.client.RequireAuth(); err != nil {
 		return err
 	}
@@ -189,8 +188,8 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, appID, subgrov
 	}
 	nonce := didInfo.Nonce + 1
 
-	message := fmt.Sprintf("GrantSubgroveKey:%s:%s:%s:%s:%d",
-		appID, subgroveID, grant.GranteeDID, identity.DID(), nonce)
+	message := fmt.Sprintf("GrantSubgroveKey:%s:%s:%s:%d",
+		subgroveID, grant.GranteeDID, identity.DID(), nonce)
 
 	signature, err := identity.SignHex([]byte(message))
 	if err != nil {
@@ -198,7 +197,6 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, appID, subgrov
 	}
 
 	req := grantSubgroveKeyRequest{
-		AppID:             appID,
 		SubgroveID:        subgroveID,
 		EncryptedKeyGrant: grant,
 		SenderDID:         identity.DID(),
@@ -216,7 +214,6 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, appID, subgrov
 
 // revokeSubgroveKeyRequest is the internal request body for the RevokeSubgroveKey transaction.
 type revokeSubgroveKeyRequest struct {
-	AppID      string `json:"app_id"`
 	SubgroveID string `json:"subgrove_id"`
 	RevokeeDID string `json:"revokee_did"`
 	SenderDID  string `json:"sender_did"`
@@ -227,7 +224,7 @@ type revokeSubgroveKeyRequest struct {
 
 // RevokeSubgroveKey broadcasts a RevokeSubgroveKey transaction, revoking
 // the specified DID's access to the subgrove's encryption key.
-func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, appID, subgroveID, revokeeDID string) error {
+func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string) error {
 	if err := p.client.RequireAuth(); err != nil {
 		return err
 	}
@@ -240,8 +237,8 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, appID, subgro
 	}
 	nonce := didInfo.Nonce + 1
 
-	message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%s:%d",
-		appID, subgroveID, revokeeDID, identity.DID(), nonce)
+	message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
+		subgroveID, revokeeDID, identity.DID(), nonce)
 
 	signature, err := identity.SignHex([]byte(message))
 	if err != nil {
@@ -249,7 +246,6 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, appID, subgro
 	}
 
 	req := revokeSubgroveKeyRequest{
-		AppID:       appID,
 		SubgroveID:  subgroveID,
 		RevokeeDID:  revokeeDID,
 		SenderDID:   identity.DID(),
@@ -267,7 +263,6 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, appID, subgro
 
 // rotateSubgroveKeyRequest is the internal request body for the RotateSubgroveKey transaction.
 type rotateSubgroveKeyRequest struct {
-	AppID      string              `json:"app_id"`
 	SubgroveID string              `json:"subgrove_id"`
 	NewEpoch   uint32              `json:"new_epoch"`
 	NewGrants  []EncryptedKeyGrant `json:"new_grants"`
@@ -280,7 +275,7 @@ type rotateSubgroveKeyRequest struct {
 // RotateSubgroveKey broadcasts a RotateSubgroveKey transaction, rotating the
 // subgrove encryption key to a new epoch and re-granting access to the
 // specified DIDs with newly encrypted keys.
-func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, appID, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) error {
+func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) error {
 	if err := p.client.RequireAuth(); err != nil {
 		return err
 	}
@@ -293,8 +288,8 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, appID, subgro
 	}
 	nonce := didInfo.Nonce + 1
 
-	message := fmt.Sprintf("RotateSubgroveKey:%s:%s:%d:%s:%d",
-		appID, subgroveID, newEpoch, identity.DID(), nonce)
+	message := fmt.Sprintf("RotateSubgroveKey:%s:%d:%s:%d",
+		subgroveID, newEpoch, identity.DID(), nonce)
 
 	signature, err := identity.SignHex([]byte(message))
 	if err != nil {
@@ -302,7 +297,6 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, appID, subgro
 	}
 
 	req := rotateSubgroveKeyRequest{
-		AppID:       appID,
 		SubgroveID:  subgroveID,
 		NewEpoch:    newEpoch,
 		NewGrants:   newGrants,

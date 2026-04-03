@@ -195,26 +195,26 @@ func (c *Client) RequireAuth() error {
 	return nil
 }
 
-// RegisterComputedFields registers computed fields for an app/dataset combination.
+// RegisterComputedFields registers computed fields for a dataset.
 //
 // Computed fields are derived values calculated from proven data,
 // enabling drop-in compatibility with The Graph's query interfaces.
 //
 // Example:
 //
-//	client.RegisterComputedFields("uniswap-v2", "pairs", UniswapV2PairFields)
-func (c *Client) RegisterComputedFields(appID, datasetID string, fields ComputedFieldSet) {
-	c.computedFields.Register(appID, datasetID, fields)
+//	client.RegisterComputedFields("pairs", UniswapV2PairFields)
+func (c *Client) RegisterComputedFields(datasetID string, fields ComputedFieldSet) {
+	c.computedFields.Register(datasetID, fields)
 }
 
-// HasComputedFields checks if computed fields are registered for an app/dataset.
-func (c *Client) HasComputedFields(appID, datasetID string) bool {
-	return c.computedFields.Has(appID, datasetID)
+// HasComputedFields checks if computed fields are registered for a dataset.
+func (c *Client) HasComputedFields(datasetID string) bool {
+	return c.computedFields.Has(datasetID)
 }
 
-// GetComputedFields returns the computed fields for an app/dataset.
-func (c *Client) GetComputedFields(appID, datasetID string) (ComputedFieldSet, bool) {
-	return c.computedFields.Get(appID, datasetID)
+// GetComputedFields returns the computed fields for a dataset.
+func (c *Client) GetComputedFields(datasetID string) (ComputedFieldSet, bool) {
+	return c.computedFields.Get(datasetID)
 }
 
 // RegisterDID registers a new DID document.
