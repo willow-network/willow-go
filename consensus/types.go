@@ -1,6 +1,9 @@
 package consensus
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // TransactionStatus represents the status of a transaction.
 type TransactionStatus string
@@ -130,4 +133,19 @@ type FundSubgroveTx struct {
 	Signature   []byte `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`
 	Nonce       uint64 `json:"nonce"`
+}
+
+// DeregisterSubgroveTx represents a transaction to deregister (delete) a subgrove.
+// Remaining funding balance is refunded to the owner.
+type DeregisterSubgroveTx struct {
+	SubgroveID  string `json:"subgrove_id"`
+	OwnerDid    string `json:"owner_did"`
+	Signature   []byte `json:"signature"`
+	PublicKeyID string `json:"public_key_id"`
+	Nonce       uint64 `json:"nonce"`
+}
+
+// DeregisterSubgroveSignMessage returns the canonical signing message for a deregister subgrove transaction.
+func DeregisterSubgroveSignMessage(subgroveID, ownerDid string, nonce uint64) string {
+	return fmt.Sprintf("DeregisterSubgrove:%s:%s:%d", subgroveID, ownerDid, nonce)
 }
