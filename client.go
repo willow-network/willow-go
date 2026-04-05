@@ -19,6 +19,7 @@ import (
 type Client struct {
 	httpClient      *http.Client
 	baseURL         *url.URL
+	indexerURL      *url.URL // Optional indexer node URL for GraphQL/SQL routing
 	identity        *Identity
 	identityMu      sync.RWMutex
 	retryConfig     RetryConfig
@@ -101,6 +102,19 @@ func WithRetryConfig(config RetryConfig) ClientOption {
 	}
 }
 
+// WithIndexerURL sets an optional indexer node URL.
+// When set, GraphQL and SQL queries are routed to the indexer instead of the validator.
+func WithIndexerURL(indexerURL string) ClientOption {
+	return func(c *Client) error {
+		parsed, err := url.Parse(strings.TrimSuffix(indexerURL, "/"))
+		if err != nil {
+			return NewConfigError(fmt.Sprintf("invalid indexer URL: %s", err))
+		}
+		c.indexerURL = parsed
+		return nil
+	}
+}
+
 // WithLightClient enables light client verification.
 func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	return func(c *Client) error {
@@ -148,6 +162,15 @@ func (b *ClientBuilder) WithRetryConfig(config RetryConfig) *ClientBuilder {
 		return b
 	}
 	b.options = append(b.options, WithRetryConfig(config))
+	return b
+}
+
+// WithIndexerURL adds an indexer URL option to the builder.
+func (b *ClientBuilder) WithIndexerURL(indexerURL string) *ClientBuilder {
+	if b.err != nil {
+		return b
+	}
+	b.options = append(b.options, WithIndexerURL(indexerURL))
 	return b
 }
 
@@ -343,6 +366,15 @@ func (c *Client) Close() error {
 		c.lightClient.Stop()
 	}
 	return nil
+}
+
+// IndexerBaseURL returns the indexer URL if configured, otherwise the base API URL.
+// Used to route GraphQL/SQL queries to an indexer node.
+func (c *Client) IndexerBaseURL() string {
+	if c.indexerURL != nil {
+		return c.indexerURL.String()
+	}
+	return c.baseURL.String()
 }
 
 // HTTP helper methods

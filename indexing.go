@@ -16,17 +16,40 @@ type IndexingOperations struct {
 }
 
 // Query executes a GraphQL query against a subgrove.
+// When an indexer URL is configured, the query is routed there.
 func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	// Enable proof by default if light client is available
 	if i.client.HasLightClient() {
 		req.IncludeProof = true
 	}
 
-	path := fmt.Sprintf("/graphql/%s", subgroveID)
-	var response GraphQLResponse
-	err := i.client.post(ctx, path, req, &response)
+	baseURL := i.client.IndexerBaseURL()
+	url := fmt.Sprintf("%s/graphql/%s", baseURL, subgroveID)
+
+	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to marshal GraphQL request: %w", err)
+	}
+
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := i.client.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("GraphQL query request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
+	}
+
+	var response GraphQLResponse
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
 
 	// Verify proof if available
@@ -61,7 +84,8 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 	})
 }
 
-// SqlQuery executes a SQL query against a subgrove
+// SqlQuery executes a SQL query against a subgrove.
+// When an indexer URL is configured, the query is routed there.
 func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
 	req := SqlRequest{
 		Query:        query,
@@ -73,7 +97,8 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 		return nil, fmt.Errorf("failed to marshal SQL request: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/sql/%s", i.client.baseURL.String(), subgroveID)
+	baseURL := i.client.IndexerBaseURL()
+	url := fmt.Sprintf("%s/sql/%s", baseURL, subgroveID)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
