@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/willow-network/willow-go/grovedb"
 )
@@ -82,6 +84,209 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 		Query:     query,
 		Variables: variables,
 	})
+}
+
+// GraphQLQueryWithSource executes a GraphQL query with explicit source selection.
+//
+// Callers declare the trust model via QuerySource:
+//   - QuerySourceValidator: consensus-verified chain-tip. Returns a
+//     *ValidatorHasNoDataError for VerifyOnly subgroves.
+//   - QuerySourceIndexer: historical/analytics via an indexer. Returns a
+//     *NoIndexersReachableError if none are reachable.
+//   - QuerySourceAuto (default): indexer if one serves this subgrove, else
+//     validator. On indexer failure, falls back to validator with
+//     Fallback=true in the returned result.
+func (i *IndexingOperations) GraphQLQueryWithSource(
+	ctx context.Context,
+	subgroveID string,
+	req *GraphQLRequest,
+	source QuerySource,
+) (*RoutedQueryResult[*GraphQLResponse], error) {
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal GraphQL request: %w", err)
+	}
+	return routeQuery[*GraphQLResponse](
+		ctx, i.client, "graphql", subgroveID, bodyBytes, source,
+	)
+}
+
+// SqlQueryWithSource executes a SQL query with explicit source selection.
+//
+// See GraphQLQueryWithSource for source semantics.
+func (i *IndexingOperations) SqlQueryWithSource(
+	ctx context.Context,
+	subgroveID, query string,
+	includeProof bool,
+	source QuerySource,
+) (*RoutedQueryResult[*SqlResponse], error) {
+	req := SqlRequest{
+		Query:        query,
+		IncludeProof: &includeProof,
+	}
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("marshal SQL request: %w", err)
+	}
+	return routeQuery[*SqlResponse](
+		ctx, i.client, "sql", subgroveID, bodyBytes, source,
+	)
+}
+
+// routeQuery is the shared routing helper used by both GraphQL and SQL
+// source-routed variants.
+func routeQuery[T any](
+	ctx context.Context,
+	c *Client,
+	pathPrefix, subgroveID string,
+	body []byte,
+	source QuerySource,
+) (*RoutedQueryResult[T], error) {
+	path := fmt.Sprintf("/%s/%s", pathPrefix, subgroveID)
+
+	callValidator := func() (T, error) {
+		var zero T
+		url := c.baseURL.String() + path
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return zero, fmt.Errorf("build validator request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return zero, fmt.Errorf("validator request: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusForbidden {
+			return zero, &ValidatorHasNoDataError{
+				SubgroveID: subgroveID,
+				Reason:     fmt.Sprintf("HTTP %d", resp.StatusCode),
+			}
+		}
+		if resp.StatusCode != http.StatusOK {
+			return zero, fmt.Errorf("validator returned %d", resp.StatusCode)
+		}
+		// Validator wraps responses in { success, data }; indexer doesn't.
+		// Decode into a union envelope that handles both shapes.
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return zero, fmt.Errorf("read validator response: %w", err)
+		}
+		return unwrapResponse[T](raw)
+	}
+
+	callIndexer := func(info IndexerInfo) (T, error) {
+		var zero T
+		endpoint := strings.TrimRight(info.EffectiveQueryEndpoint(), "/")
+		url := endpoint + path
+		req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+		if err != nil {
+			return zero, fmt.Errorf("build indexer request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return zero, fmt.Errorf("indexer request: %w", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode >= 500 {
+			c.Indexers.Evict(info.IndexerDID)
+			return zero, fmt.Errorf("indexer returned %d", resp.StatusCode)
+		}
+		if resp.StatusCode != http.StatusOK {
+			return zero, fmt.Errorf("indexer returned %d", resp.StatusCode)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return zero, fmt.Errorf("read indexer response: %w", err)
+		}
+		return unwrapResponse[T](raw)
+	}
+
+	switch source {
+	case QuerySourceValidator:
+		result, err := callValidator()
+		if err != nil {
+			return nil, err
+		}
+		return &RoutedQueryResult[T]{Result: result, Source: ServedByValidator}, nil
+
+	case QuerySourceIndexer:
+		candidates, err := c.Indexers.ForSubgrove(ctx, subgroveID)
+		if err != nil {
+			return nil, err
+		}
+		if len(candidates) == 0 {
+			return nil, &NoIndexersReachableError{
+				SubgroveID: subgroveID,
+				Details:    "no indexer in the registry serves this subgrove",
+			}
+		}
+		var errs []string
+		for _, info := range candidates {
+			result, err := callIndexer(info)
+			if err == nil {
+				return &RoutedQueryResult[T]{
+					Result:     result,
+					Source:     ServedByIndexer,
+					IndexerDID: info.IndexerDID,
+				}, nil
+			}
+			errs = append(errs, fmt.Sprintf("%s: %v", info.IndexerDID, err))
+		}
+		return nil, &NoIndexersReachableError{
+			SubgroveID: subgroveID,
+			Details:    strings.Join(errs, "; "),
+		}
+
+	default: // QuerySourceAuto
+		candidates, _ := c.Indexers.ForSubgrove(ctx, subgroveID)
+		hadCandidates := len(candidates) > 0
+		for _, info := range candidates {
+			result, err := callIndexer(info)
+			if err == nil {
+				return &RoutedQueryResult[T]{
+					Result:     result,
+					Source:     ServedByIndexer,
+					IndexerDID: info.IndexerDID,
+				}, nil
+			}
+			// continue to next indexer / fall back to validator
+		}
+		result, err := callValidator()
+		if err != nil {
+			return nil, err
+		}
+		return &RoutedQueryResult[T]{
+			Result:   result,
+			Source:   ServedByValidator,
+			Fallback: hadCandidates,
+		}, nil
+	}
+}
+
+// unwrapResponse handles both the validator's { success, data: T } envelope
+// and the indexer's raw T response, returning T in both cases.
+func unwrapResponse[T any](raw []byte) (T, error) {
+	var zero T
+	// Try indexer-shaped raw T first (faster path).
+	if err := json.Unmarshal(raw, &zero); err == nil {
+		// Check if it's actually an envelope disguised as T — if T is a
+		// pointer to a struct and the JSON has `success` + `data`, prefer
+		// the data field.
+		var envelope struct {
+			Success *bool           `json:"success"`
+			Data    json.RawMessage `json:"data"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && envelope.Success != nil && len(envelope.Data) > 0 {
+			var wrapped T
+			if err := json.Unmarshal(envelope.Data, &wrapped); err == nil {
+				return wrapped, nil
+			}
+		}
+		return zero, nil
+	}
+	return zero, fmt.Errorf("failed to decode response")
 }
 
 // SqlQuery executes a SQL query against a subgrove.

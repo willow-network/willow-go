@@ -322,13 +322,30 @@ type SubgroveInfo struct {
 }
 
 // IndexerInfo represents information about an indexer node.
+// Matches the validator's `GET /indexers` response shape.
 type IndexerInfo struct {
-	ID          string   `json:"id"`
-	Address     string   `json:"address"`
-	Stake       uint64   `json:"stake"`
-	Subgroves   []string `json:"subgroves"`
-	Status      string   `json:"status"`
-	Performance float64  `json:"performance"`
+	IndexerDID       string   `json:"indexer_did"`
+	Subgroves        []string `json:"subgroves"`
+	StakeAmount      uint64   `json:"stake_amount"`
+	// Endpoint is the monitoring / health endpoint (historically also used
+	// for queries).
+	Endpoint string `json:"endpoint"`
+	// QueryEndpoint is the preferred endpoint for client query traffic
+	// (GraphQL/SQL/historical). When empty, callers should fall back to
+	// Endpoint. See EffectiveQueryEndpoint.
+	QueryEndpoint    string  `json:"query_endpoint,omitempty"`
+	Status           string  `json:"status"`
+	PerformanceScore float64 `json:"performance_score"`
+	LastUpdate       uint64  `json:"last_update"`
+}
+
+// EffectiveQueryEndpoint returns the URL clients should POST GraphQL/SQL
+// queries to. Prefers QueryEndpoint when non-empty; falls back to Endpoint.
+func (i *IndexerInfo) EffectiveQueryEndpoint() string {
+	if i.QueryEndpoint != "" {
+		return i.QueryEndpoint
+	}
+	return i.Endpoint
 }
 
 // HealthStatus represents the health status of a node.

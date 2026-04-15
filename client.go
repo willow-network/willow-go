@@ -38,6 +38,11 @@ type Client struct {
 	Indexing     *IndexingOperations
 	Privacy      *PrivacyOperations
 	Files        *FileOperations
+	// Indexers is the discovery client used by source-routed queries.
+	// When no indexer URL was configured, it queries GET /indexers on the
+	// validator (with 30-second cache). When indexerURL is set, it returns
+	// a synthetic single-entry list.
+	Indexers *Indexers
 }
 
 // ClientOption is a functional option for configuring the Client.
@@ -74,6 +79,12 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 	client.Indexing = &IndexingOperations{client: client}
 	client.Privacy = &PrivacyOperations{client: client}
 	client.Files = &FileOperations{client: client}
+
+	indexerURLStr := ""
+	if client.indexerURL != nil {
+		indexerURLStr = client.indexerURL.String()
+	}
+	client.Indexers = NewIndexers(client.httpClient, client.baseURL.String(), indexerURLStr)
 
 	return client, nil
 }

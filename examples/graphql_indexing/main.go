@@ -173,11 +173,12 @@ func main() {
 	} else {
 		fmt.Printf("   Found %d indexers:\n", len(indexers))
 		for _, indexer := range indexers {
-			fmt.Printf("   - %s\n", indexer.ID)
-			fmt.Printf("     Address: %s\n", indexer.Address)
-			fmt.Printf("     Stake: %d WILL\n", indexer.Stake)
+			fmt.Printf("   - %s\n", indexer.IndexerDID)
+			fmt.Printf("     Endpoint: %s\n", indexer.Endpoint)
+			fmt.Printf("     Query endpoint: %s\n", indexer.EffectiveQueryEndpoint())
+			fmt.Printf("     Stake: %d WILL\n", indexer.StakeAmount)
 			fmt.Printf("     Status: %s\n", indexer.Status)
-			fmt.Printf("     Performance: %.1f\n", indexer.Performance)
+			fmt.Printf("     Performance: %.1f\n", indexer.PerformanceScore)
 			fmt.Printf("     Subgroves: %v\n", indexer.Subgroves)
 		}
 	}
