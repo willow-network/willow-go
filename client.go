@@ -43,6 +43,11 @@ type Client struct {
 	// validator (with 30-second cache). When indexerURL is set, it returns
 	// a synthetic single-entry list.
 	Indexers *Indexers
+	// Subscriptions opens graphql-transport-ws WebSocket connections
+	// against either the validator's /graphql/ws (default) or an
+	// indexer's, based on SubscribeOptions.Source. See
+	// docs/QUERY_ROUTING.md for the source-selection matrix.
+	Subscriptions *Subscriptions
 }
 
 // ClientOption is a functional option for configuring the Client.
@@ -85,6 +90,7 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 		indexerURLStr = client.indexerURL.String()
 	}
 	client.Indexers = NewIndexers(client.httpClient, client.baseURL.String(), indexerURLStr)
+	client.Subscriptions = NewSubscriptions(client.baseURL.String(), client.Indexers, client.httpClient)
 
 	return client, nil
 }
