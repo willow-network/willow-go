@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -15,11 +16,19 @@ import (
 type Client struct {
 	httpClient *http.Client
 	rpcURL     string
+	apiURL     string
 }
 
 // ClientConfig contains configuration for the consensus client.
 type ClientConfig struct {
-	RPCURL  string
+	// RPCURL is CometBFT's JSON-RPC endpoint (used for read-only
+	// queries: status, block, validators, etc.).
+	RPCURL string
+	// APIURL is the Willow REST API endpoint. Transaction submission
+	// goes through its /tx/submit endpoint because the validator's
+	// on-the-wire format is bincode — see
+	// docs/todo/proposal-bincode-wire.md.
+	APIURL  string
 	Timeout time.Duration
 }
 
@@ -27,6 +36,7 @@ type ClientConfig struct {
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		RPCURL:  "http://localhost:26657",
+		APIURL:  "http://localhost:3031",
 		Timeout: 30 * time.Second,
 	}
 }
@@ -38,64 +48,76 @@ func NewClient(config ClientConfig) *Client {
 			Timeout: config.Timeout,
 		},
 		rpcURL: config.RPCURL,
+		apiURL: config.APIURL,
 	}
 }
 
-// BroadcastTxSync broadcasts a transaction synchronously.
+// BroadcastTxSync submits a transaction through the Willow API server's
+// /tx/submit endpoint. The server bincode-encodes the JSON body and
+// forwards to CometBFT's broadcast_tx_sync — the chain's on-the-wire
+// format is bincode (see docs/todo/proposal-bincode-wire.md), so SDKs
+// send JSON and let the server handle the bincode conversion.
 func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*BroadcastResult, error) {
-	// Serialize the transaction
-	txBytes, err := json.Marshal(tx)
+	if c.apiURL == "" {
+		return nil, fmt.Errorf("APIURL is required for transaction submission; set it in ClientConfig")
+	}
+
+	body, err := json.Marshal(tx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
 	}
 
-	// Base64 encode
-	txB64 := base64.StdEncoding.EncodeToString(txBytes)
-
-	// Make RPC request
-	rpcReq := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "broadcast_tx_sync",
-		"params": map[string]interface{}{
-			"tx": txB64,
-		},
-	}
-
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	url := strings.TrimRight(c.apiURL, "/") + "/tx/submit"
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	httpResp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, fmt.Errorf("tx submit request failed: %w", err)
+	}
+	defer httpResp.Body.Close()
+
+	respBody, err := io.ReadAll(httpResp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
-	// Parse response
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    *struct {
+			TxHash string `json:"tx_hash"`
+			Code   int    `json:"code"`
+			Log    string `json:"log"`
+		} `json:"data"`
+		Error *string `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return nil, fmt.Errorf("failed to parse /tx/submit response: %w", err)
+	}
+
 	result := &BroadcastResult{}
-	if resp.Error != nil {
+	if !envelope.Success || envelope.Data == nil {
 		result.Success = false
-		result.ErrorMessage = resp.Error.Message
-		result.ErrorCode = resp.Error.Code
+		if envelope.Error != nil {
+			result.ErrorMessage = *envelope.Error
+		} else {
+			result.ErrorMessage = fmt.Sprintf("HTTP %d", httpResp.StatusCode)
+		}
 		return result, nil
 	}
 
-	if resp.Result != nil {
-		var txResp struct {
-			Code int    `json:"code"`
-			Data string `json:"data"`
-			Log  string `json:"log"`
-			Hash string `json:"hash"`
-		}
-		if err := json.Unmarshal(resp.Result, &txResp); err == nil {
-			result.TxHash = txResp.Hash
-			result.RawLog = txResp.Log
-			if txResp.Code == 0 {
-				result.Success = true
-			} else {
-				result.Success = false
-				result.ErrorCode = txResp.Code
-				result.ErrorMessage = txResp.Log
-			}
-		}
+	result.TxHash = envelope.Data.TxHash
+	result.RawLog = envelope.Data.Log
+	if envelope.Data.Code == 0 {
+		result.Success = true
+	} else {
+		result.Success = false
+		result.ErrorCode = envelope.Data.Code
+		result.ErrorMessage = envelope.Data.Log
 	}
-
 	return result, nil
 }
 
