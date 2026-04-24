@@ -5,6 +5,44 @@ import (
 	"fmt"
 )
 
+// ByteArray is a []byte with JSON marshaling as a number array.
+//
+// The consensus Transaction enum stores `signature: Vec<u8>`, which
+// serde_json serializes as a JSON array of integers (`[1, 2, 3, ...]`).
+// Go's default `json.Marshal([]byte)` emits a base64 string instead —
+// validator rejects that with "invalid type: string, expected a sequence".
+// Every tx-type `Signature` field uses this instead of raw `[]byte`.
+type ByteArray []byte
+
+// MarshalJSON outputs the underlying bytes as a JSON array of integers.
+func (b ByteArray) MarshalJSON() ([]byte, error) {
+	ints := make([]int, len(b))
+	for i, v := range b {
+		ints[i] = int(v)
+	}
+	return json.Marshal(ints)
+}
+
+// UnmarshalJSON accepts either a JSON array of integers (canonical) or a
+// base64 string (for back-compat with any caller that still sends one).
+func (b *ByteArray) UnmarshalJSON(data []byte) error {
+	var ints []int
+	if err := json.Unmarshal(data, &ints); err == nil {
+		out := make([]byte, len(ints))
+		for i, v := range ints {
+			out[i] = byte(v)
+		}
+		*b = out
+		return nil
+	}
+	var raw []byte
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*b = raw
+	return nil
+}
+
 // TransactionStatus represents the status of a transaction.
 type TransactionStatus string
 
@@ -47,7 +85,7 @@ type Transaction struct {
 // RegisterDidTx represents a DID registration transaction.
 type RegisterDidTx struct {
 	DidDocument interface{} `json:"did_document"`
-	Signature   []byte      `json:"signature"`
+	Signature   ByteArray      `json:"signature"`
 	PublicKeyID string      `json:"public_key_id"`
 	Nonce       uint64      `json:"nonce"`
 }
@@ -88,7 +126,7 @@ type RegisterSubgroveTx struct {
 	Schema      string        `json:"schema"`
 	OwnerDid    string        `json:"owner_did"`
 	Mode        *SubgroveMode `json:"mode,omitempty"`
-	Signature   []byte        `json:"signature"`
+	Signature   ByteArray        `json:"signature"`
 	PublicKeyID string        `json:"public_key_id"`
 	Nonce       uint64        `json:"nonce"`
 }
@@ -99,7 +137,7 @@ type TransferTx struct {
 	ToDid       string `json:"to_did"`
 	Amount      uint64 `json:"amount"`
 	Memo        string `json:"memo,omitempty"`
-	Signature   []byte `json:"signature"`
+	Signature   ByteArray `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`
 	Nonce       uint64 `json:"nonce"`
 }
@@ -110,7 +148,7 @@ type DataStoreTx struct {
 	Key         string          `json:"key"`
 	Data        json.RawMessage `json:"data"`
 	OwnerDid    string          `json:"owner_did"`
-	Signature   []byte          `json:"signature"`
+	Signature   ByteArray          `json:"signature"`
 	PublicKeyID string          `json:"public_key_id"`
 	Nonce       uint64          `json:"nonce"`
 }
@@ -120,7 +158,7 @@ type DataDeleteTx struct {
 	SubgroveID  string `json:"subgrove_id"`
 	Key         string `json:"key"`
 	OwnerDid    string `json:"owner_did"`
-	Signature   []byte `json:"signature"`
+	Signature   ByteArray `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`
 	Nonce       uint64 `json:"nonce"`
 }
@@ -130,7 +168,7 @@ type FundSubgroveTx struct {
 	FromDid     string `json:"from_did"`
 	SubgroveID  string `json:"subgrove_id"`
 	Amount      uint64 `json:"amount"`
-	Signature   []byte `json:"signature"`
+	Signature   ByteArray `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`
 	Nonce       uint64 `json:"nonce"`
 }
@@ -140,7 +178,7 @@ type FundSubgroveTx struct {
 type DeregisterSubgroveTx struct {
 	SubgroveID  string `json:"subgrove_id"`
 	OwnerDid    string `json:"owner_did"`
-	Signature   []byte `json:"signature"`
+	Signature   ByteArray `json:"signature"`
 	PublicKeyID string `json:"public_key_id"`
 	Nonce       uint64 `json:"nonce"`
 }
