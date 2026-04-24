@@ -20,6 +20,21 @@ go get github.com/willow-network/willow-go
 - **Light Client**: Trustless verification using CometBFT light client
 - **GroveDB Proofs**: Cryptographic proof verification for all queries
 
+## Transaction submission
+
+Transactions submitted through this SDK go to the API server's
+`POST /tx/submit` endpoint. The server accepts the JSON-encoded
+transaction, bincode-encodes it (the chain's on-the-wire format), and
+forwards to CometBFT's `broadcast_tx_sync`. `APIURL` is therefore
+**required** whenever you submit a tx; `RPCURL` is only used for
+read-only RPC queries (status, block, validators) and may be omitted
+or pointed at the same endpoint.
+
+`BroadcastTxAsync` and `BroadcastTxCommit` were removed from
+`consensus.Client` — `/tx/submit` only exposes sync semantics.
+Callers that need fire-and-forget or wait-for-commit should layer
+that on top of `BroadcastTxSync` + `GetTx` polling.
+
 ## Quick Start
 
 ```go

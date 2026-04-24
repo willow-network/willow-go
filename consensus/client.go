@@ -3,7 +3,6 @@ package consensus
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -121,122 +120,12 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 	return result, nil
 }
 
-// BroadcastTxAsync broadcasts a transaction asynchronously.
-func (c *Client) BroadcastTxAsync(ctx context.Context, tx interface{}) (*BroadcastResult, error) {
-	// Serialize the transaction
-	txBytes, err := json.Marshal(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
-	}
-
-	// Base64 encode
-	txB64 := base64.StdEncoding.EncodeToString(txBytes)
-
-	// Make RPC request
-	rpcReq := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "broadcast_tx_async",
-		"params": map[string]interface{}{
-			"tx": txB64,
-		},
-	}
-
-	resp, err := c.doRPCRequest(ctx, rpcReq)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse response
-	result := &BroadcastResult{}
-	if resp.Error != nil {
-		result.Success = false
-		result.ErrorMessage = resp.Error.Message
-		result.ErrorCode = resp.Error.Code
-		return result, nil
-	}
-
-	if resp.Result != nil {
-		var txResp struct {
-			Hash string `json:"hash"`
-		}
-		if err := json.Unmarshal(resp.Result, &txResp); err == nil {
-			result.TxHash = txResp.Hash
-			result.Success = true
-		}
-	}
-
-	return result, nil
-}
-
-// BroadcastTxCommit broadcasts a transaction and waits for it to be committed.
-func (c *Client) BroadcastTxCommit(ctx context.Context, tx interface{}) (*BroadcastResult, error) {
-	// Serialize the transaction
-	txBytes, err := json.Marshal(tx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to serialize transaction: %w", err)
-	}
-
-	// Base64 encode
-	txB64 := base64.StdEncoding.EncodeToString(txBytes)
-
-	// Make RPC request
-	rpcReq := map[string]interface{}{
-		"jsonrpc": "2.0",
-		"id":      1,
-		"method":  "broadcast_tx_commit",
-		"params": map[string]interface{}{
-			"tx": txB64,
-		},
-	}
-
-	resp, err := c.doRPCRequest(ctx, rpcReq)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse response
-	result := &BroadcastResult{}
-	if resp.Error != nil {
-		result.Success = false
-		result.ErrorMessage = resp.Error.Message
-		result.ErrorCode = resp.Error.Code
-		return result, nil
-	}
-
-	if resp.Result != nil {
-		var txResp struct {
-			CheckTx struct {
-				Code int    `json:"code"`
-				Log  string `json:"log"`
-			} `json:"check_tx"`
-			DeliverTx struct {
-				Code int    `json:"code"`
-				Log  string `json:"log"`
-			} `json:"deliver_tx"`
-			Hash   string `json:"hash"`
-			Height string `json:"height"`
-		}
-		if err := json.Unmarshal(resp.Result, &txResp); err == nil {
-			result.TxHash = txResp.Hash
-			result.RawLog = txResp.DeliverTx.Log
-
-			if txResp.CheckTx.Code != 0 {
-				result.Success = false
-				result.ErrorCode = txResp.CheckTx.Code
-				result.ErrorMessage = txResp.CheckTx.Log
-			} else if txResp.DeliverTx.Code != 0 {
-				result.Success = false
-				result.ErrorCode = txResp.DeliverTx.Code
-				result.ErrorMessage = txResp.DeliverTx.Log
-			} else {
-				result.Success = true
-			}
-		}
-	}
-
-	return result, nil
-}
+// BroadcastTxAsync and BroadcastTxCommit were removed after the bincode
+// wire migration. The API server only exposes `/tx/submit` (which maps
+// to `broadcast_tx_sync` under the hood); callers that need fire-and-
+// forget or wait-for-commit semantics should layer that on top of
+// BroadcastTxSync + GetTx polling, not speak JSON-RPC directly to
+// CometBFT (the validator no longer accepts JSON on the wire).
 
 // GetTx retrieves a transaction by hash.
 func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
