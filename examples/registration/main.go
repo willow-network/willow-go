@@ -105,8 +105,8 @@ func main() {
 		fmt.Printf("   Fields: %d\n", len(sg.Schema.Fields))
 	}
 
-	// 8. Demonstrate builders for registration requests
-	fmt.Println("\n8. Building registration requests (for reference)...")
+	// 6. Build a subgrove registration request using the SDK builders
+	fmt.Println("\n6. Building a registration request...")
 
 	// Schema builder
 	schema := willow.NewSchemaBuilder("User").
@@ -127,13 +127,21 @@ func main() {
 		Build()
 	fmt.Printf("   Subgrove request built: %s\n", subgroveReq.SubgroveID)
 
-	// 9. Summary
-	fmt.Println("\n9. Registration summary...")
-	fmt.Println("   DID generation: willow.NewIdentity(algorithm)")
-	fmt.Println("   DID registration: client.RegisterDID(ctx, didDocument)")
-	fmt.Println("   Query subgroves: client.Registration.ListSubgroves(ctx)")
-	fmt.Println("\n   Note: Creating subgroves requires consensus transactions")
-	fmt.Println("   Use the consensus.Client for registration operations.")
+	// 7. Submit the registration. May fail without funding; the SDK
+	// surface for the write is client.Registration.RegisterSubgrove.
+	fmt.Println("\n7. Submitting registration...")
+	if _, err := client.Registration.RegisterSubgrove(ctx, subgroveReq); err != nil {
+		fmt.Printf("   Note: %v (likely needs WILL tokens to fund the subgrove)\n", err)
+	} else {
+		fmt.Printf("   Registered: %s\n", subgroveReq.SubgroveID)
+	}
+
+	// 8. Summary
+	fmt.Println("\n8. Registration summary...")
+	fmt.Println("   DID generation:      willow.NewIdentity(algorithm)")
+	fmt.Println("   DID registration:    client.RegisterDID(ctx, didDocument)")
+	fmt.Println("   Subgrove register:   client.Registration.RegisterSubgrove(ctx, req)")
+	fmt.Println("   Subgrove list/get:   client.Registration.ListSubgroves / GetSubgrove")
 
 	fmt.Println("\nRegistration example complete!")
 }

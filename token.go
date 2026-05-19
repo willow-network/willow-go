@@ -3,6 +3,7 @@ package willow
 import (
 	"context"
 	"fmt"
+	"math/big"
 )
 
 // TokenOperations provides methods for token-related queries.
@@ -10,7 +11,7 @@ type TokenOperations struct {
 	client *Client
 }
 
-// GetInfo retrieves information about the CAN token.
+// GetInfo retrieves information about the WILL token.
 func (t *TokenOperations) GetInfo(ctx context.Context) (*TokenInfo, error) {
 	var info TokenInfo
 	err := t.client.get(ctx, "/token/info", &info)
@@ -54,13 +55,22 @@ func (t *TokenOperations) GetFeeSchedule(ctx context.Context) (*FeeSchedule, err
 	return &schedule, nil
 }
 
-// EstimateStorageFee estimates the storage fee for the given data size.
+// EstimateStorageFee estimates the storage fee (in WILL base units) for the
+// given data size: cost_per_byte * dataSizeBytes. cost_per_byte is returned
+// by the API as a decimal string because the value can exceed uint64, so
+// the multiplication runs through math/big and the result is returned as
+// a decimal string in the same convention.
 func (t *TokenOperations) EstimateStorageFee(ctx context.Context, dataSizeBytes uint64) (string, error) {
 	schedule, err := t.GetFeeSchedule(ctx)
 	if err != nil {
 		return "0", err
 	}
-	return fmt.Sprintf("%s (cost_per_byte=%s, bytes=%d)", schedule.CostPerByte, schedule.CostPerByte, dataSizeBytes), nil
+	costPerByte, ok := new(big.Int).SetString(schedule.CostPerByte, 10)
+	if !ok {
+		return "0", fmt.Errorf("invalid cost_per_byte from server: %q", schedule.CostPerByte)
+	}
+	total := new(big.Int).Mul(costPerByte, new(big.Int).SetUint64(dataSizeBytes))
+	return total.String(), nil
 }
 
 // EstimateQueryFee estimates the query fee.

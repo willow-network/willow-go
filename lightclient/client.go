@@ -580,16 +580,19 @@ func (lc *LightClient) SelectBestEndpoint(ctx context.Context) (string, error) {
 		}(endpoint)
 	}
 
-	// Collect results with timeout
+	// Collect results, but stop early on timeout. A bare `break` only
+	// breaks the select, so the loop would block on <-results forever once
+	// the timeout fires; the labeled break exits the for loop.
 	var collected []result
 	timeout := time.After(lc.config.RPCTimeout)
 
+collect:
 	for i := 0; i < len(lc.config.ValidatorEndpoints); i++ {
 		select {
 		case r := <-results:
 			collected = append(collected, r)
 		case <-timeout:
-			break
+			break collect
 		}
 	}
 

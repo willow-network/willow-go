@@ -189,9 +189,10 @@ func main() {
 		fmt.Println("   To enable trustless verification, configure a light client:")
 		fmt.Println()
 		fmt.Println("   lc, _ := lightclient.NewLightClient(lightclient.Config{")
-		fmt.Println("       ChainID:      \"willow-chain\",")
-		fmt.Println("       TrustOptions: trustOptions,")
-		fmt.Println("       PrimaryAddr:  \"http://localhost:26657\",")
+		fmt.Println("       ChainID:            \"willow-chain\",")
+		fmt.Println("       ValidatorEndpoints: []string{\"http://localhost:26657\"},")
+		fmt.Println("       TrustThreshold:     lightclient.TrustThreshold{Numerator: 2, Denominator: 3},")
+		fmt.Println("       TrustingPeriod:     24 * time.Hour,")
 		fmt.Println("   })")
 		fmt.Println("   client, _ := willow.NewClient(apiURL, willow.WithLightClient(lc))")
 	}
