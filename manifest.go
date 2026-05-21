@@ -3,11 +3,10 @@
 // Mirrors willow_types::consensus::manifest::WillowManifest in the Rust
 // workspace. The consensus validator rejects any manifest_content that
 // doesn't decode into this exact shape, so SDK callers should build
-// their on-chain manifest bytes via SerializeManifest.
-//
-// v1 scope is EVM-only. Solana data sources have a different shape
-// (program_id + start_slot + instructions) and follow when there's a
-// real Go consumer.
+// their on-chain manifest bytes via SerializeManifest. Each data source
+// is either EVM (Address + Abi + StartBlock + Events) or Solana
+// (ProgramID + StartSlot + Instructions); the family is dispatched at
+// parse time from the Network field.
 package willow
 
 import (
@@ -107,28 +106,67 @@ const ManifestSpecVersion = "1.0.0"
 
 // Mirrors MAX_* constants in willow-types.
 const (
-	MaxDataSources       = 64
-	MaxEventsPerSource   = 32
-	MaxNameLen           = 64
-	MaxAbiLen            = 64
-	MaxDescriptionLen    = 1024
+	MaxDataSources     = 64
+	MaxEventsPerSource = 32
+	MaxNameLen         = 64
+	MaxAbiLen          = 64
+	MaxDescriptionLen  = 1024
 )
+
+// DataSource is one data source in a manifest. Concrete types:
+// EvmDataSource, SolanaDataSource.
+type DataSource interface {
+	dataSourceName() string
+	dataSourceNetwork() SupportedChain
+	validate(path string) error
+	marshalJSON() ([]byte, error)
+}
 
 // EvmDataSource is one indexed EVM contract within a manifest.
 type EvmDataSource struct {
 	Name       string         `json:"name"`
 	Network    SupportedChain `json:"network"`
-	Address    string         `json:"address"`     // 0x + 40 hex (lowercased on serialize)
+	Address    string         `json:"address"` // 0x + 40 hex (lowercased on serialize)
 	Abi        string         `json:"abi"`
 	StartBlock uint64         `json:"start_block"`
 	Events     []string       `json:"events"`
 }
 
+func (d *EvmDataSource) dataSourceName() string             { return d.Name }
+func (d *EvmDataSource) dataSourceNetwork() SupportedChain  { return d.Network }
+func (d *EvmDataSource) marshalJSON() ([]byte, error) {
+	normalized := *d
+	normalized.Address = strings.ToLower(d.Address)
+	type alias EvmDataSource
+	return json.Marshal((*alias)(&normalized))
+}
+
+// SolanaDataSource is one indexed Solana program within a manifest.
+type SolanaDataSource struct {
+	Name         string         `json:"name"`
+	Network      SupportedChain `json:"network"`
+	ProgramID    string         `json:"program_id"` // base58-encoded 32-byte pubkey
+	StartSlot    uint64         `json:"start_slot"`
+	Instructions []string       `json:"instructions"` // each 0x + even hex chars (>= 2)
+}
+
+func (d *SolanaDataSource) dataSourceName() string            { return d.Name }
+func (d *SolanaDataSource) dataSourceNetwork() SupportedChain { return d.Network }
+func (d *SolanaDataSource) marshalJSON() ([]byte, error) {
+	normalized := *d
+	normalized.Instructions = make([]string, len(d.Instructions))
+	for i, ix := range d.Instructions {
+		normalized.Instructions[i] = strings.ToLower(ix)
+	}
+	type alias SolanaDataSource
+	return json.Marshal((*alias)(&normalized))
+}
+
 // WillowManifest is the canonical on-chain manifest shape.
 type WillowManifest struct {
-	SpecVersion string          `json:"spec_version"`
-	Description *string         `json:"description,omitempty"`
-	DataSources []EvmDataSource `json:"data_sources"`
+	SpecVersion string       `json:"spec_version"`
+	Description *string      `json:"description,omitempty"`
+	DataSources []DataSource `json:"data_sources"`
 }
 
 // ManifestValidationError carries a field path so callers can attribute
@@ -147,11 +185,14 @@ func newErr(path, message string) *ManifestValidationError {
 }
 
 var (
-	addressRe    = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
-	nameRe       = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
-	eventNameRe  = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-	eventParamRe = regexp.MustCompile(`^[A-Za-z0-9_\[\]]+$`)
+	addressRe       = regexp.MustCompile(`^0x[0-9a-fA-F]{40}$`)
+	nameRe          = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	eventNameRe     = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+	eventParamRe    = regexp.MustCompile(`^[A-Za-z0-9_\[\]]+$`)
+	discriminatorRe = regexp.MustCompile(`^0x([0-9a-fA-F]{2})+$`)
 )
+
+const base58Alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 func validateEventSignature(sig, path string) error {
 	if sig == "" {
@@ -180,40 +221,84 @@ func validateEventSignature(sig, path string) error {
 	return nil
 }
 
-func validateDataSource(ds *EvmDataSource, path string) error {
-	if ds.Name == "" {
+func validateName(name, path string) error {
+	if name == "" {
 		return newErr(path+".name", fmt.Sprintf("%s.name must not be empty", path))
 	}
-	if len(ds.Name) > MaxNameLen {
-		return newErr(path+".name", fmt.Sprintf("%s.name length %d exceeds maximum %d", path, len(ds.Name), MaxNameLen))
+	if len(name) > MaxNameLen {
+		return newErr(path+".name", fmt.Sprintf("%s.name length %d exceeds maximum %d", path, len(name), MaxNameLen))
 	}
-	if !nameRe.MatchString(ds.Name) {
-		return newErr(path+".name", fmt.Sprintf("%s.name %q must be alphanumeric, '-', or '_'", path, ds.Name))
+	if !nameRe.MatchString(name) {
+		return newErr(path+".name", fmt.Sprintf("%s.name %q must be alphanumeric, '-', or '_'", path, name))
 	}
-	if !IsSupportedChain(string(ds.Network)) {
-		return newErr(path+".network", fmt.Sprintf("%s.network %q is not a canonical chain", path, ds.Network))
+	return nil
+}
+
+func validateNetworkFamily(ds DataSource, path string, want ChainFamily) error {
+	network := ds.dataSourceNetwork()
+	if !IsSupportedChain(string(network)) {
+		return newErr(path+".network", fmt.Sprintf("%s.network %q is not a canonical chain", path, network))
 	}
-	if FamilyOf(ds.Network) != FamilyEvm {
-		return newErr(path+".network", fmt.Sprintf("%s.network %q is non-EVM; Solana data sources have a different shape and are not yet supported by this builder", path, ds.Network))
+	if FamilyOf(network) != want {
+		return newErr(path+".network", fmt.Sprintf("%s.network %q is %s-family but data source is %s", path, network, FamilyOf(network), want))
 	}
-	if !addressRe.MatchString(ds.Address) {
-		return newErr(path+".address", fmt.Sprintf("%s.address must be 0x + 40 hex chars (got %q)", path, ds.Address))
+	return nil
+}
+
+func (d *EvmDataSource) validate(path string) error {
+	if err := validateName(d.Name, path); err != nil {
+		return err
 	}
-	if ds.Abi == "" {
+	if err := validateNetworkFamily(d, path, FamilyEvm); err != nil {
+		return err
+	}
+	if !addressRe.MatchString(d.Address) {
+		return newErr(path+".address", fmt.Sprintf("%s.address must be 0x + 40 hex chars (got %q)", path, d.Address))
+	}
+	if d.Abi == "" {
 		return newErr(path+".abi", fmt.Sprintf("%s.abi must not be empty", path))
 	}
-	if len(ds.Abi) > MaxAbiLen {
-		return newErr(path+".abi", fmt.Sprintf("%s.abi length %d exceeds maximum %d", path, len(ds.Abi), MaxAbiLen))
+	if len(d.Abi) > MaxAbiLen {
+		return newErr(path+".abi", fmt.Sprintf("%s.abi length %d exceeds maximum %d", path, len(d.Abi), MaxAbiLen))
 	}
-	if len(ds.Events) == 0 {
+	if len(d.Events) == 0 {
 		return newErr(path+".events", fmt.Sprintf("%s.events must declare at least one event", path))
 	}
-	if len(ds.Events) > MaxEventsPerSource {
-		return newErr(path+".events", fmt.Sprintf("%s.events has %d entries (maximum %d)", path, len(ds.Events), MaxEventsPerSource))
+	if len(d.Events) > MaxEventsPerSource {
+		return newErr(path+".events", fmt.Sprintf("%s.events has %d entries (maximum %d)", path, len(d.Events), MaxEventsPerSource))
 	}
-	for i, sig := range ds.Events {
+	for i, sig := range d.Events {
 		if err := validateEventSignature(sig, fmt.Sprintf("%s.events[%d]", path, i)); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+func (d *SolanaDataSource) validate(path string) error {
+	if err := validateName(d.Name, path); err != nil {
+		return err
+	}
+	if err := validateNetworkFamily(d, path, FamilySolana); err != nil {
+		return err
+	}
+	if d.ProgramID == "" || len(d.ProgramID) < 32 || len(d.ProgramID) > 44 {
+		return newErr(path+".program_id", fmt.Sprintf("%s.program_id must be a base58-encoded 32-byte pubkey (got %q)", path, d.ProgramID))
+	}
+	for _, c := range d.ProgramID {
+		if !strings.ContainsRune(base58Alphabet, c) {
+			return newErr(path+".program_id", fmt.Sprintf("%s.program_id contains invalid base58 character %q", path, c))
+		}
+	}
+	if len(d.Instructions) == 0 {
+		return newErr(path+".instructions", fmt.Sprintf("%s.instructions must declare at least one discriminator", path))
+	}
+	if len(d.Instructions) > MaxEventsPerSource {
+		return newErr(path+".instructions", fmt.Sprintf("%s.instructions has %d entries (maximum %d)", path, len(d.Instructions), MaxEventsPerSource))
+	}
+	for i, ix := range d.Instructions {
+		if !discriminatorRe.MatchString(ix) {
+			return newErr(fmt.Sprintf("%s.instructions[%d]", path, i), fmt.Sprintf("%s.instructions[%d] must be 0x + an even, non-zero number of hex chars (got %q)", path, i, ix))
 		}
 	}
 	return nil
@@ -234,8 +319,8 @@ func ValidateManifest(m *WillowManifest) error {
 	if len(m.DataSources) > MaxDataSources {
 		return newErr("data_sources", fmt.Sprintf("manifest has %d data sources (maximum %d)", len(m.DataSources), MaxDataSources))
 	}
-	for i := range m.DataSources {
-		if err := validateDataSource(&m.DataSources[i], fmt.Sprintf("data_sources[%d]", i)); err != nil {
+	for i, ds := range m.DataSources {
+		if err := ds.validate(fmt.Sprintf("data_sources[%d]", i)); err != nil {
 			return err
 		}
 	}
@@ -244,34 +329,80 @@ func ValidateManifest(m *WillowManifest) error {
 
 // SerializeManifest validates and emits the canonical JSON byte form
 // that goes on-chain via SubgroveMode.BlockchainIndexing.manifest_content.
-//
-// EVM addresses are normalised to lowercase so the emitted bytes
-// round-trip bit-for-bit with WillowManifest::from_bytes in Rust.
 func SerializeManifest(m *WillowManifest) ([]byte, error) {
 	if err := ValidateManifest(m); err != nil {
 		return nil, err
 	}
-	normalized := *m
-	normalized.DataSources = make([]EvmDataSource, len(m.DataSources))
+	sources := make([]json.RawMessage, len(m.DataSources))
 	for i, ds := range m.DataSources {
-		ds.Address = strings.ToLower(ds.Address)
-		normalized.DataSources[i] = ds
+		raw, err := ds.marshalJSON()
+		if err != nil {
+			return nil, err
+		}
+		sources[i] = raw
 	}
-	return json.Marshal(&normalized)
+	out := struct {
+		SpecVersion string            `json:"spec_version"`
+		Description *string           `json:"description,omitempty"`
+		DataSources []json.RawMessage `json:"data_sources"`
+	}{
+		SpecVersion: m.SpecVersion,
+		Description: m.Description,
+		DataSources: sources,
+	}
+	return json.Marshal(&out)
 }
 
 // ParseManifest validates and decodes canonical manifest bytes.
 func ParseManifest(data []byte) (*WillowManifest, error) {
-	// Use a decoder with DisallowUnknownFields to mirror the Rust
-	// deny_unknown_fields behaviour.
+	type shell struct {
+		SpecVersion string            `json:"spec_version"`
+		Description *string           `json:"description,omitempty"`
+		DataSources []json.RawMessage `json:"data_sources"`
+	}
 	dec := json.NewDecoder(strings.NewReader(string(data)))
 	dec.DisallowUnknownFields()
-	var m WillowManifest
-	if err := dec.Decode(&m); err != nil {
+	var s shell
+	if err := dec.Decode(&s); err != nil {
 		return nil, newErr("", fmt.Sprintf("manifest is not valid JSON: %v", err))
 	}
-	if err := ValidateManifest(&m); err != nil {
+	sources := make([]DataSource, len(s.DataSources))
+	for i, raw := range s.DataSources {
+		var hint struct {
+			Network SupportedChain `json:"network"`
+		}
+		if err := json.Unmarshal(raw, &hint); err != nil {
+			return nil, newErr(fmt.Sprintf("data_sources[%d].network", i), fmt.Sprintf("data_sources[%d].network missing: %v", i, err))
+		}
+		if !IsSupportedChain(string(hint.Network)) {
+			return nil, newErr(fmt.Sprintf("data_sources[%d].network", i), fmt.Sprintf("data_sources[%d].network %q is not a canonical chain", i, hint.Network))
+		}
+		switch FamilyOf(hint.Network) {
+		case FamilyEvm:
+			var ds EvmDataSource
+			dec := json.NewDecoder(strings.NewReader(string(raw)))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&ds); err != nil {
+				return nil, newErr(fmt.Sprintf("data_sources[%d]", i), fmt.Sprintf("data_sources[%d]: %v", i, err))
+			}
+			sources[i] = &ds
+		case FamilySolana:
+			var ds SolanaDataSource
+			dec := json.NewDecoder(strings.NewReader(string(raw)))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&ds); err != nil {
+				return nil, newErr(fmt.Sprintf("data_sources[%d]", i), fmt.Sprintf("data_sources[%d]: %v", i, err))
+			}
+			sources[i] = &ds
+		}
+	}
+	m := &WillowManifest{
+		SpecVersion: s.SpecVersion,
+		Description: s.Description,
+		DataSources: sources,
+	}
+	if err := ValidateManifest(m); err != nil {
 		return nil, err
 	}
-	return &m, nil
+	return m, nil
 }
