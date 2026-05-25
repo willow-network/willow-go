@@ -41,11 +41,9 @@ func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, 
 
 // Get retrieves data by key with automatic proof verification.
 //
-// This method always verifies proofs using the light client for trustless verification.
-// The light client auto-initializes with trust-on-first-use if not already configured.
-//
-// Important: TODO: When mainnet/testnet launches, the light client will be
-// initialized with hardcoded checkpoint headers instead of trust-on-first-use.
+// Proofs are always verified through the light client. If no light client has
+// been configured, one is auto-initialized via trust-on-first-use; pin a
+// known-good checkpoint header in production deployments.
 func (d *DataOperations) Get(ctx context.Context, subgroveID, key string) (*DataResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
@@ -120,11 +118,9 @@ func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, item
 
 // Query queries data with filters and automatic proof verification.
 //
-// This method always verifies proofs using the light client for trustless verification.
-// The light client auto-initializes with trust-on-first-use if not already configured.
-//
-// Important: TODO: When mainnet/testnet launches, the light client will be
-// initialized with hardcoded checkpoint headers instead of trust-on-first-use.
+// Proofs are always verified through the light client. If no light client has
+// been configured, one is auto-initialized via trust-on-first-use; pin a
+// known-good checkpoint header in production deployments.
 func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err

@@ -25,8 +25,7 @@ type ClientConfig struct {
 	RPCURL string
 	// APIURL is the Willow REST API endpoint. Transaction submission
 	// goes through its /tx/submit endpoint because the validator's
-	// on-the-wire format is bincode — see
-	// docs/todo/proposal-bincode-wire.md.
+	// on-the-wire format is bincode.
 	APIURL  string
 	Timeout time.Duration
 }
@@ -54,8 +53,8 @@ func NewClient(config ClientConfig) *Client {
 // BroadcastTxSync submits a transaction through the Willow API server's
 // /tx/submit endpoint. The server bincode-encodes the JSON body and
 // forwards to CometBFT's broadcast_tx_sync — the chain's on-the-wire
-// format is bincode (see docs/todo/proposal-bincode-wire.md), so SDKs
-// send JSON and let the server handle the bincode conversion.
+// format is bincode, so SDKs send JSON and let the server handle the
+// bincode conversion.
 func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*BroadcastResult, error) {
 	if c.apiURL == "" {
 		return nil, fmt.Errorf("APIURL is required for transaction submission; set it in ClientConfig")

@@ -45,8 +45,7 @@ type Client struct {
 	Indexers *Indexers
 	// Subscriptions opens graphql-transport-ws WebSocket connections
 	// against either the validator's /graphql/ws (default) or an
-	// indexer's, based on SubscribeOptions.Source. See
-	// docs/QUERY_ROUTING.md for the source-selection matrix.
+	// indexer's, based on SubscribeOptions.Source.
 	Subscriptions *Subscriptions
 }
 
@@ -324,14 +323,9 @@ func (c *Client) HasLightClient() bool {
 
 // GetOrCreateLightClient returns the light client, creating one with trust-on-first-use if needed.
 //
-// This auto-initializes a light client using trust-on-first-use:
-// the first block received from validators is trusted, and all subsequent
-// blocks are verified against it.
-//
-// Important: TODO: When mainnet/testnet launches, replace trust-on-first-use
-// with hardcoded checkpoint headers for true trustless initialization.
-// Trust-on-first-use is secure for subsequent operations but trusts the
-// initial block from the connected validators.
+// Trust-on-first-use bootstrap: the first verified header is trusted, and
+// every subsequent header chains from it cryptographically. Pin a known-good
+// checkpoint header in production deployments.
 func (c *Client) GetOrCreateLightClient(ctx context.Context) (*lightclient.LightClient, error) {
 	if c.lightClient != nil {
 		return c.lightClient, nil
@@ -344,9 +338,6 @@ func (c *Client) GetOrCreateLightClient(ctx context.Context) (*lightclient.Light
 	if c.lightClient != nil {
 		return c.lightClient, nil
 	}
-
-	// TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
-	// instead of trust-on-first-use for true trustless initialization from genesis.
 
 	// Derive CometBFT RPC endpoint from API URL (typically :3031 -> :26657)
 	rpcEndpoint := strings.Replace(c.baseURL.String(), ":3031", ":26657", 1)

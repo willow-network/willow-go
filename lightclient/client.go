@@ -67,18 +67,11 @@ func NewLightClient(config Config) (*LightClient, error) {
 	return lc, nil
 }
 
-// InitializeWithTrustOnFirstUse initializes the light client by fetching and trusting
-// the latest block from validators. This is a trust-on-first-use model where the
-// first block received is trusted, and all subsequent blocks are verified against it.
-//
-// Important: TODO: When mainnet/testnet launches, replace trust-on-first-use
-// with hardcoded checkpoint headers for true trustless initialization.
-// Trust-on-first-use is secure for subsequent operations but trusts the
-// initial block from the connected validators.
+// InitializeWithTrustOnFirstUse initializes the light client by fetching and
+// trusting the latest block from validators. Every subsequent header is
+// verified against that initial trusted state. Pin a known-good checkpoint
+// header in production deployments.
 func (lc *LightClient) InitializeWithTrustOnFirstUse(ctx context.Context) error {
-	// TODO: When mainnet/testnet launches, use hardcoded checkpoint headers
-	// instead of trust-on-first-use for true trustless initialization from genesis.
-
 	// Fetch the latest block from any responsive validator
 	var block *LightBlock
 	var lastErr error
@@ -113,14 +106,10 @@ func (lc *LightClient) InitializeWithTrustOnFirstUse(ctx context.Context) error 
 	return nil
 }
 
-// GetVerifiedRootHash returns the verified root hash (app_hash) from the latest trusted header.
-// This is the cryptographically verified root hash that proofs should be verified against
-// for trustless data verification.
-//
-// If the light client is not initialized, it will initialize with trust-on-first-use.
-//
-// Important: TODO: When mainnet/testnet launches, the light client will be
-// initialized with hardcoded checkpoint headers instead of trust-on-first-use.
+// GetVerifiedRootHash returns the verified root hash (app_hash) from the latest
+// trusted header — the cryptographically verified root hash proofs should be
+// verified against. If the light client is not initialized, it is initialized
+// via trust-on-first-use.
 func (lc *LightClient) GetVerifiedRootHash(ctx context.Context) (string, error) {
 	lc.stateMu.RLock()
 	state := lc.trustedState
