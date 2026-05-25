@@ -139,6 +139,39 @@ func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	}
 }
 
+// apiKeyTransport wraps a base RoundTripper so every outbound request
+// carries the managed-tier `X-API-Key` header. The wrap is non-destructive:
+// the original request is cloned before the header is set, so the wrapped
+// transport is safe to share across goroutines and reuse with other clients.
+type apiKeyTransport struct {
+	base http.RoundTripper
+	key  string
+}
+
+func (t *apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req2 := req.Clone(req.Context())
+	req2.Header.Set("X-API-Key", t.key)
+	return t.base.RoundTrip(req2)
+}
+
+// WithAPIKey configures the managed-tier API key. When set, the SDK sends
+// `X-API-Key: <key>` on every request. Mint a key at
+// https://dashboard.willow.tech/account. Required for queries and writes
+// against managed api.willow.tech / indexer.willow.tech.
+func WithAPIKey(key string) ClientOption {
+	return func(c *Client) error {
+		if key == "" {
+			return nil
+		}
+		base := c.httpClient.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		c.httpClient.Transport = &apiKeyTransport{base: base, key: key}
+		return nil
+	}
+}
+
 // ClientBuilder provides a fluent interface for building a Client.
 type ClientBuilder struct {
 	apiURL  string
@@ -196,6 +229,15 @@ func (b *ClientBuilder) WithLightClient(lc *lightclient.LightClient) *ClientBuil
 		return b
 	}
 	b.options = append(b.options, WithLightClient(lc))
+	return b
+}
+
+// WithAPIKey adds a managed-tier API key to the builder. See WithAPIKey.
+func (b *ClientBuilder) WithAPIKey(key string) *ClientBuilder {
+	if b.err != nil {
+		return b
+	}
+	b.options = append(b.options, WithAPIKey(key))
 	return b
 }
 
