@@ -132,8 +132,8 @@ type EvmDataSource struct {
 	Events     []string       `json:"events"`
 }
 
-func (d *EvmDataSource) dataSourceName() string             { return d.Name }
-func (d *EvmDataSource) dataSourceNetwork() SupportedChain  { return d.Network }
+func (d *EvmDataSource) dataSourceName() string            { return d.Name }
+func (d *EvmDataSource) dataSourceNetwork() SupportedChain { return d.Network }
 func (d *EvmDataSource) marshalJSON() ([]byte, error) {
 	normalized := *d
 	normalized.Address = strings.ToLower(d.Address)
@@ -164,9 +164,10 @@ func (d *SolanaDataSource) marshalJSON() ([]byte, error) {
 
 // WillowManifest is the canonical on-chain manifest shape.
 type WillowManifest struct {
-	SpecVersion string       `json:"spec_version"`
-	Description *string      `json:"description,omitempty"`
-	DataSources []DataSource `json:"data_sources"`
+	SpecVersion          string       `json:"spec_version"`
+	Description          *string      `json:"description,omitempty"`
+	DataSources          []DataSource `json:"data_sources"`
+	DeferredCompleteness bool         `json:"deferred_completeness,omitempty"`
 }
 
 // ManifestValidationError carries a field path so callers can attribute
