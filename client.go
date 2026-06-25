@@ -20,6 +20,7 @@ type Client struct {
 	httpClient      *http.Client
 	baseURL         *url.URL
 	indexerURL      *url.URL // Optional indexer node URL for GraphQL/SQL routing
+	rpcURL          *url.URL // Optional CometBFT JSON-RPC endpoint override (for ABCI queries)
 	identity        *Identity
 	identityMu      sync.RWMutex
 	retryConfig     RetryConfig
@@ -131,6 +132,21 @@ func WithIndexerURL(indexerURL string) ClientOption {
 	}
 }
 
+// WithRPCURL sets an explicit CometBFT JSON-RPC endpoint (e.g.
+// http://localhost:26657). Used for ABCI store queries such as the
+// completeness anchor. When unset, the endpoint is derived from the API URL by
+// swapping the :3031 REST port for :26657.
+func WithRPCURL(rpcURL string) ClientOption {
+	return func(c *Client) error {
+		parsed, err := url.Parse(strings.TrimSuffix(rpcURL, "/"))
+		if err != nil {
+			return NewConfigError(fmt.Sprintf("invalid RPC URL: %s", err))
+		}
+		c.rpcURL = parsed
+		return nil
+	}
+}
+
 // WithLightClient enables light client verification.
 func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	return func(c *Client) error {
@@ -220,6 +236,15 @@ func (b *ClientBuilder) WithIndexerURL(indexerURL string) *ClientBuilder {
 		return b
 	}
 	b.options = append(b.options, WithIndexerURL(indexerURL))
+	return b
+}
+
+// WithRPCURL adds a CometBFT JSON-RPC endpoint option to the builder.
+func (b *ClientBuilder) WithRPCURL(rpcURL string) *ClientBuilder {
+	if b.err != nil {
+		return b
+	}
+	b.options = append(b.options, WithRPCURL(rpcURL))
 	return b
 }
 
@@ -381,8 +406,8 @@ func (c *Client) GetOrCreateLightClient(ctx context.Context) (*lightclient.Light
 		return c.lightClient, nil
 	}
 
-	// Derive CometBFT RPC endpoint from API URL (typically :3031 -> :26657)
-	rpcEndpoint := strings.Replace(c.baseURL.String(), ":3031", ":26657", 1)
+	// Use the configured/derived CometBFT RPC endpoint (typically :3031 -> :26657)
+	rpcEndpoint := c.RPCEndpoint()
 
 	config := lightclient.Config{
 		ChainID:            "willow-chain",
@@ -425,6 +450,16 @@ func (c *Client) IndexerBaseURL() string {
 		return c.indexerURL.String()
 	}
 	return c.baseURL.String()
+}
+
+// RPCEndpoint returns the CometBFT JSON-RPC endpoint used for ABCI store
+// queries. It returns the explicit override from WithRPCURL when set, otherwise
+// derives it from the API URL by swapping the :3031 REST port for :26657.
+func (c *Client) RPCEndpoint() string {
+	if c.rpcURL != nil {
+		return c.rpcURL.String()
+	}
+	return strings.Replace(c.baseURL.String(), ":3031", ":26657", 1)
 }
 
 // HTTP helper methods

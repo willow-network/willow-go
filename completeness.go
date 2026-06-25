@@ -10,11 +10,12 @@
 // Canonical Rust source: willow-network consensus
 // indexed_data_handler::full_block_auth::canonical_event_set_hash.
 //
-// No on-chain anchor fetch helper is provided here: the SDK currently has no
-// ABCI store-query helper for the events_commitment path, and the indexer's
-// /completeness/{subgrove}/{block}/matched-logs route is not yet served. Once
-// both exist, a verifyBlockCompleteness convenience wrapper can fetch the
-// anchor + preimage and call VerifyServedEvents.
+// This file holds the pure, network-free hashing spec (CanonicalEventSetHash /
+// VerifyServedEvents). The end-to-end fetch-and-verify convenience wrapper —
+// VerifyBlockCompleteness, which pulls the on-chain anchor and the indexer's
+// matched-log preimage and calls VerifyServedEvents — lives in
+// completeness_fetch.go so this file stays dependency-free for cross-language
+// vector comparison.
 package willow
 
 import (
