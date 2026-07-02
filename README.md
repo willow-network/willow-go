@@ -64,9 +64,13 @@ func main() {
         log.Fatal(err)
     }
 
+    // Willow DIDs are self-certifying: the id is derived from the public key
+    // as did:willow:z<base58btc(SHA3-256(multicodec_prefix || public_key))>.
     fmt.Printf("Generated DID: %s\n", identity.DID())
 
-    // Register the DID
+    // The DID must be funded BEFORE registration (the fee is paid from its own
+    // balance): have an already-funded account transfer >= the registration
+    // fee to identity.DID(), then register.
     _, err = client.RegisterDID(ctx, identity.DidDocument)
     if err != nil {
         log.Fatal(err)

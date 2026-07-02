@@ -43,6 +43,14 @@ func main() {
 	fmt.Println("   Algorithm: Ed25519")
 	fmt.Printf("   Public Key ID: %s\n", ed25519Identity.PublicKeyID())
 
+	// Willow DIDs are self-certifying: the id is derived from the public key,
+	// not chosen. The chain accepts a registration only for the exact derived
+	// id, and the fee is paid from that id's own balance, so a new DID must be
+	// FUNDED before it can be registered:
+	//   1. generate locally (done above),
+	//   2. have a funded account transfer >= the registration fee to the DID,
+	//   3. then RegisterDID (below). Expect an "insufficient balance" style
+	//      error here until step 2 has been done for this fresh DID.
 	_, err = client.RegisterDID(ctx, ed25519Identity.DidDocument)
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
