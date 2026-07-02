@@ -1,6 +1,7 @@
 package willow
 
 import (
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -11,10 +12,10 @@ func TestNewIdentityEd25519(t *testing.T) {
 		t.Fatalf("Failed to create Ed25519 identity: %v", err)
 	}
 
-	// Check DID format
+	// Check DID format (self-certifying: did:willow:z<base58btc>)
 	did := identity.DID()
-	if !strings.HasPrefix(did, "did:willow:Ed25519:") {
-		t.Errorf("Expected DID to start with 'did:willow:Ed25519:', got %s", did)
+	if !strings.HasPrefix(did, "did:willow:z") {
+		t.Errorf("Expected DID to start with 'did:willow:z', got %s", did)
 	}
 
 	// Check key lengths
@@ -48,10 +49,10 @@ func TestNewIdentitySecp256k1(t *testing.T) {
 		t.Fatalf("Failed to create Secp256k1 identity: %v", err)
 	}
 
-	// Check DID format
+	// Check DID format (self-certifying: did:willow:z<base58btc>)
 	did := identity.DID()
-	if !strings.HasPrefix(did, "did:willow:secp256k1:") {
-		t.Errorf("Expected DID to start with 'did:willow:secp256k1:', got %s", did)
+	if !strings.HasPrefix(did, "did:willow:z") {
+		t.Errorf("Expected DID to start with 'did:willow:z', got %s", did)
 	}
 
 	// Check key lengths
@@ -265,8 +266,46 @@ func TestGenerateDID(t *testing.T) {
 	}
 
 	did := GenerateDID(keyPair)
-	if !strings.HasPrefix(did, "did:willow:Ed25519:") {
-		t.Errorf("Expected DID to start with 'did:willow:Ed25519:', got %s", did)
+	if !strings.HasPrefix(did, "did:willow:z") {
+		t.Errorf("Expected DID to start with 'did:willow:z', got %s", did)
+	}
+}
+
+// TestGenerateDIDAcceptanceVector pins the exact self-certifying derivation:
+//
+//	did = "did:willow:z" + base58btc( SHA3-256( 0xED01 || ed25519_pubkey ) )
+//
+// If this fails, the derivation no longer matches the on-chain RegisterDid
+// check (common bug: using Keccak-256 instead of FIPS-202 SHA3-256).
+func TestGenerateDIDAcceptanceVector(t *testing.T) {
+	pubKey, err := hex.DecodeString("a003201e65e47d578ad9bb17cb1d3590e9f504f55eac6ee40002e3ab9517c49c")
+	if err != nil {
+		t.Fatalf("failed to decode public key: %v", err)
+	}
+
+	keyPair := &KeyPair{Algorithm: Ed25519, PublicKey: pubKey}
+
+	const want = "did:willow:zDZ1Qqspppayjd9LF3Pkebq64Fa2PuK8zFQDDc11citB2"
+	if got := GenerateDID(keyPair); got != want {
+		t.Errorf("GenerateDID acceptance vector mismatch:\n  got  %s\n  want %s", got, want)
+	}
+}
+
+func TestGenerateDIDIsSelfCertifying(t *testing.T) {
+	// The same public key must always derive the same DID.
+	keyPair, err := GenerateKeyPair(Ed25519)
+	if err != nil {
+		t.Fatalf("Failed to generate key pair: %v", err)
+	}
+	if GenerateDID(keyPair) != GenerateDID(keyPair) {
+		t.Error("DID derivation should be deterministic for a fixed public key")
+	}
+
+	// The public key ID convention is {did}#key-1.
+	doc := CreateDidDocument(keyPair)
+	wantID := doc.ID + "#key-1"
+	if doc.PublicKeys[0].ID != wantID {
+		t.Errorf("Expected public key ID %s, got %s", wantID, doc.PublicKeys[0].ID)
 	}
 }
 

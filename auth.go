@@ -5,10 +5,12 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"math/big"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
 	"github.com/btcsuite/btcd/btcec/v2/ecdsa"
+	"golang.org/x/crypto/sha3"
 )
 
 // KeyPair represents a cryptographic key pair.
@@ -174,13 +176,79 @@ func verifySecp256k1(publicKey, message, signature []byte) (bool, error) {
 	return sig.Verify(hash, pubKey), nil
 }
 
-// GenerateDID generates a DID from a key pair.
+// Multicodec prefixes for the public-key types embedded in a self-certifying
+// Willow DID. See https://github.com/multiformats/multicodec (unsigned-varint
+// encoded codes: ed25519-pub = 0xed, secp256k1-pub = 0xe7).
+var (
+	multicodecEd25519Pub   = []byte{0xED, 0x01} // ed25519-pub
+	multicodecSecp256k1Pub = []byte{0xE7, 0x01} // secp256k1-pub
+)
+
+// GenerateDID derives a self-certifying Willow DID from a key pair.
+//
+// The identifier is bound to the public key, so it cannot be chosen:
+//
+//	did = "did:willow:z" + base58btc( SHA3-256( multicodec_prefix || public_key ) )
+//
+// where SHA3-256 is FIPS-202 (NOT Keccak-256), the multicodec prefix is
+// 0xED01 for Ed25519 and 0xE701 for secp256k1 (hashed over the 33-byte
+// compressed key), and the leading 'z' is the multibase base58btc marker.
+//
+// Because the id is derived from the key, the on-chain RegisterDid check
+// accepts a registration only for the exact derived id. A freshly generated
+// DID therefore has to be funded (someone transfers at least the registration
+// fee to the derived id) BEFORE the holder registers it; see RegisterDID.
 func GenerateDID(keyPair *KeyPair) string {
-	// DID format: did:willow:{algorithm}:{suffix}
-	// Suffix is the first 8 bytes (16 hex chars) of the public key
-	suffix := hex.EncodeToString(keyPair.PublicKey[:8])
-	algName := string(keyPair.Algorithm)
-	return fmt.Sprintf("did:willow:%s:%s", algName, suffix)
+	prefix, pub := didKeyMaterial(keyPair)
+	payload := make([]byte, 0, len(prefix)+len(pub))
+	payload = append(payload, prefix...)
+	payload = append(payload, pub...)
+	digest := sha3.Sum256(payload)
+	return "did:willow:z" + base58btcEncode(digest[:])
+}
+
+// didKeyMaterial returns the multicodec prefix and the public-key bytes used to
+// derive a DID. For secp256k1 the key is normalized to its 33-byte compressed
+// form so uncompressed keys derive the same id.
+func didKeyMaterial(keyPair *KeyPair) ([]byte, []byte) {
+	if keyPair.Algorithm == Secp256k1 {
+		pub := keyPair.PublicKey
+		if len(pub) != 33 {
+			if parsed, err := btcec.ParsePubKey(pub); err == nil {
+				pub = parsed.SerializeCompressed()
+			}
+		}
+		return multicodecSecp256k1Pub, pub
+	}
+	// Ed25519 (and default): the 32-byte public key is used as-is.
+	return multicodecEd25519Pub, keyPair.PublicKey
+}
+
+// base58btcEncode encodes bytes using the Bitcoin/base58btc alphabet, encoding
+// each leading 0x00 byte as a leading '1'.
+func base58btcEncode(input []byte) string {
+	// Count leading zero bytes; each becomes a leading '1'.
+	zeros := 0
+	for zeros < len(input) && input[zeros] == 0 {
+		zeros++
+	}
+
+	num := new(big.Int).SetBytes(input)
+	base := big.NewInt(58)
+	mod := new(big.Int)
+	// Built least-significant-digit first, reversed below.
+	encoded := make([]byte, 0, len(input)*138/100+1)
+	for num.Sign() > 0 {
+		num.DivMod(num, base, mod)
+		encoded = append(encoded, base58Alphabet[mod.Int64()])
+	}
+	for i := 0; i < zeros; i++ {
+		encoded = append(encoded, base58Alphabet[0])
+	}
+	for i, j := 0, len(encoded)-1; i < j; i, j = i+1, j-1 {
+		encoded[i], encoded[j] = encoded[j], encoded[i]
+	}
+	return string(encoded)
 }
 
 // CreateDidDocument creates a DID document from a key pair.
@@ -189,7 +257,7 @@ func CreateDidDocument(keyPair *KeyPair) *DidDocument {
 	now := time.Now().Unix()
 
 	publicKey := PublicKey{
-		ID:           fmt.Sprintf("%s#keys-1", did),
+		ID:           fmt.Sprintf("%s#key-1", did),
 		Type:         keyPair.Algorithm.KeyType(),
 		PublicKeyHex: keyPair.PublicKeyHex(),
 	}

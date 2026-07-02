@@ -324,6 +324,16 @@ func (c *Client) GetComputedFields(datasetID string) (ComputedFieldSet, bool) {
 }
 
 // RegisterDID registers a new DID document.
+//
+// Willow DIDs are self-certifying: the id is derived from the public key (see
+// GenerateDID), not chosen. Because the fee for registration is paid from the
+// derived id's own balance, a new DID must be funded BEFORE it is registered:
+//
+//  1. Generate the identity locally (willow.NewIdentity) — no network call.
+//  2. Fund it: have an already-funded account submit a token transfer of at
+//     least the registration fee to identity.DID() (see FormatTransferMessage
+//     / TransferRequest). Confirm with client.Token.GetBalance(ctx, did).
+//  3. Register: client.RegisterDID(ctx, identity.DidDocument).
 func (c *Client) RegisterDID(ctx context.Context, didDocument *DidDocument) (*DidDocument, error) {
 	var result DidDocument
 	err := c.post(ctx, "/did", didDocument, &result)
