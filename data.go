@@ -73,7 +73,7 @@ func (d *DataOperations) GetUnverified(ctx context.Context, subgroveID, key stri
 		return nil, err
 	}
 
-	path := fmt.Sprintf("/data/%s/%s", subgroveID, key)
+	path := fmt.Sprintf("/data/%s/%s?include_proof=false", subgroveID, key)
 	var response DataResponse
 	if err := d.client.get(ctx, path, &response); err != nil {
 		return nil, err
@@ -127,7 +127,7 @@ func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *Qu
 	}
 
 	// Always enable proof for trustless verification
-	query.IncludeProof = true
+	query.IncludeProof = BoolPtr(true)
 
 	path := fmt.Sprintf("/query/%s", subgroveID)
 	var response QueryResponse
@@ -157,7 +157,7 @@ func (d *DataOperations) QueryUnverified(ctx context.Context, subgroveID string,
 		return nil, err
 	}
 
-	query.IncludeProof = false
+	query.IncludeProof = BoolPtr(false)
 
 	path := fmt.Sprintf("/query/%s", subgroveID)
 	var response QueryResponse
@@ -325,7 +325,7 @@ func (qb *QueryBuilder) Offset(offset int) *QueryBuilder {
 
 // IncludeProof enables proof inclusion.
 func (qb *QueryBuilder) IncludeProof() *QueryBuilder {
-	qb.query.IncludeProof = true
+	qb.query.IncludeProof = BoolPtr(true)
 	return qb
 }
 
