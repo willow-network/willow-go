@@ -22,7 +22,7 @@ type IndexingOperations struct {
 func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	// Enable proof by default if light client is available
 	if i.client.HasLightClient() {
-		req.IncludeProof = true
+		req.IncludeProof = BoolPtr(true)
 	}
 
 	baseURL := i.client.IndexerBaseURL()
@@ -66,7 +66,7 @@ func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *
 
 // QueryUnverified executes a GraphQL query without proof verification (faster).
 func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
-	req.IncludeProof = false
+	req.IncludeProof = BoolPtr(false)
 
 	path := fmt.Sprintf("/graphql/%s", subgroveID)
 	var response GraphQLResponse
@@ -460,7 +460,7 @@ func (b *GraphQLQueryBuilder) OperationName(name string) *GraphQLQueryBuilder {
 
 // IncludeProof enables proof inclusion.
 func (b *GraphQLQueryBuilder) IncludeProof() *GraphQLQueryBuilder {
-	b.req.IncludeProof = true
+	b.req.IncludeProof = BoolPtr(true)
 	return b
 }
 

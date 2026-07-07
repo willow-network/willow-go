@@ -1,9 +1,62 @@
 package willow
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
+
+// TestIncludeProofWireSerialization guards the display/*Unverified fix: an
+// explicit include_proof=false must survive JSON serialization (reach the wire
+// as `"include_proof":false`) rather than being dropped by omitempty and
+// defaulted back to true by the server. An explicit opt-in must still emit
+// true, and an unset pointer must be omitted entirely.
+func TestIncludeProofWireSerialization(t *testing.T) {
+	// QueryRequest: the *Unverified path sets a pointer-to-false.
+	falseQuery, err := json.Marshal(&QueryRequest{IncludeProof: BoolPtr(false)})
+	if err != nil {
+		t.Fatalf("marshal QueryRequest(false): %v", err)
+	}
+	if !strings.Contains(string(falseQuery), `"include_proof":false`) {
+		t.Errorf("QueryRequest with false pointer must serialize include_proof=false, got %s", falseQuery)
+	}
+
+	// QueryBuilder.IncludeProof() is the explicit opt-in — must emit true.
+	trueQuery, err := json.Marshal(NewQueryBuilder().IncludeProof().Build())
+	if err != nil {
+		t.Fatalf("marshal QueryRequest(true): %v", err)
+	}
+	if !strings.Contains(string(trueQuery), `"include_proof":true`) {
+		t.Errorf("QueryBuilder.IncludeProof() must serialize include_proof=true, got %s", trueQuery)
+	}
+
+	// Unset pointer is omitted (server applies its own default).
+	bareQuery, err := json.Marshal(&QueryRequest{})
+	if err != nil {
+		t.Fatalf("marshal QueryRequest(nil): %v", err)
+	}
+	if strings.Contains(string(bareQuery), "include_proof") {
+		t.Errorf("QueryRequest with nil pointer must omit include_proof, got %s", bareQuery)
+	}
+
+	// GraphQLRequest: same contract on the GraphQL *Unverified path.
+	falseGQL, err := json.Marshal(&GraphQLRequest{Query: "{ x }", IncludeProof: BoolPtr(false)})
+	if err != nil {
+		t.Fatalf("marshal GraphQLRequest(false): %v", err)
+	}
+	if !strings.Contains(string(falseGQL), `"include_proof":false`) {
+		t.Errorf("GraphQLRequest with false pointer must serialize include_proof=false, got %s", falseGQL)
+	}
+
+	trueGQL, err := json.Marshal(NewGraphQLQuery("{ x }").IncludeProof().Build())
+	if err != nil {
+		t.Fatalf("marshal GraphQLRequest(true): %v", err)
+	}
+	if !strings.Contains(string(trueGQL), `"include_proof":true`) {
+		t.Errorf("GraphQLQueryBuilder.IncludeProof() must serialize include_proof=true, got %s", trueGQL)
+	}
+}
 
 func TestRetryConfigDefaults(t *testing.T) {
 	config := DefaultRetryConfig()

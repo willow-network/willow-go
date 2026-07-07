@@ -192,7 +192,7 @@ type QueryRequest struct {
 	Sort         *QuerySort    `json:"sort,omitempty"`
 	Limit        int           `json:"limit,omitempty"`
 	Offset       int           `json:"offset,omitempty"`
-	IncludeProof bool          `json:"include_proof,omitempty"`
+	IncludeProof *bool         `json:"include_proof,omitempty"`
 }
 
 // QueryResult represents a single result from a query.
@@ -222,12 +222,12 @@ type HistoricalQueryResponse struct {
 	Success          bool        `json:"success"`
 	ProviderDID      string      `json:"provider_did,omitempty"`
 	ProviderEndpoint string      `json:"provider_endpoint,omitempty"`
-	StateRoot        string      `json:"state_root"`        // Checkpoint state root for proof verification
-	BlockRange       [2]uint64   `json:"block_range"`       // Block range covered by the checkpoint
-	Data             interface{} `json:"data"`              // Query results from the indexer
-	Proof            string      `json:"proof,omitempty"`   // Merkle proof (hex-encoded)
-	CanReindex       bool        `json:"can_reindex"`       // Whether data can be re-indexed
-	Error            string      `json:"error,omitempty"`   // Error message if any
+	StateRoot        string      `json:"state_root"`      // Checkpoint state root for proof verification
+	BlockRange       [2]uint64   `json:"block_range"`     // Block range covered by the checkpoint
+	Data             interface{} `json:"data"`            // Query results from the indexer
+	Proof            string      `json:"proof,omitempty"` // Merkle proof (hex-encoded)
+	CanReindex       bool        `json:"can_reindex"`     // Whether data can be re-indexed
+	Error            string      `json:"error,omitempty"` // Error message if any
 }
 
 // CheckpointInfo represents information about a checkpoint.
@@ -246,7 +246,7 @@ type GraphQLRequest struct {
 	Query         string                 `json:"query"`
 	Variables     map[string]interface{} `json:"variables,omitempty"`
 	OperationName string                 `json:"operation_name,omitempty"`
-	IncludeProof  bool                   `json:"include_proof,omitempty"`
+	IncludeProof  *bool                  `json:"include_proof,omitempty"`
 }
 
 // GraphQLError represents a GraphQL error.
@@ -324,9 +324,9 @@ type SubgroveInfo struct {
 // IndexerInfo represents information about an indexer node.
 // Matches the validator's `GET /indexers` response shape.
 type IndexerInfo struct {
-	IndexerDID       string   `json:"indexer_did"`
-	Subgroves        []string `json:"subgroves"`
-	StakeAmount      uint64   `json:"stake_amount"`
+	IndexerDID  string   `json:"indexer_did"`
+	Subgroves   []string `json:"subgroves"`
+	StakeAmount uint64   `json:"stake_amount"`
 	// Endpoint is the monitoring / health endpoint (historically also used
 	// for queries).
 	Endpoint string `json:"endpoint"`
