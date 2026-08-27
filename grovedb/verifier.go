@@ -2,7 +2,6 @@ package grovedb
 
 import (
 	"bytes"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 )
@@ -517,95 +516,193 @@ func ExecuteMerkProof(proofBytes []byte) (*MerkExecutionResult, error) {
 	}, nil
 }
 
-// DecodeGroveDBProof decodes a GroveDB proof from bytes.
-func DecodeGroveDBProof(proofBytes []byte) (*GroveDBProof, error) {
-	if len(proofBytes) < 4 {
-		return nil, NewVerificationError("proof too short")
-	}
+// bincodeReader reads the bincode-2 "standard" encoding grovedb uses for
+// GroveDBProof: big-endian, varint integers (tag < 251 literal; 251 = u16,
+// 252 = u32, 253 = u64 follow), length-prefixed byte vectors, one-byte bools.
+type bincodeReader struct {
+	data []byte
+	off  int
+}
 
-	// Version is first 4 bytes (little-endian u32)
-	version := binary.LittleEndian.Uint32(proofBytes[:4])
-	if version != 0 {
-		return nil, NewVerificationError(fmt.Sprintf("unsupported proof version: %d", version))
+func (r *bincodeReader) varint() (uint64, error) {
+	if r.off >= len(r.data) {
+		return 0, NewVerificationError("proof truncated (varint)")
 	}
+	tag := r.data[r.off]
+	r.off++
+	var n int
+	switch {
+	case tag < 251:
+		return uint64(tag), nil
+	case tag == 251:
+		n = 2
+	case tag == 252:
+		n = 4
+	case tag == 253:
+		n = 8
+	default:
+		return 0, NewVerificationError("proof: unsupported varint width")
+	}
+	if r.off+n > len(r.data) {
+		return 0, NewVerificationError("proof truncated (varint body)")
+	}
+	var v uint64
+	for i := 0; i < n; i++ {
+		v = v<<8 | uint64(r.data[r.off+i])
+	}
+	r.off += n
+	return v, nil
+}
 
-	rootLayer, remaining, err := decodeLayerProof(proofBytes[4:])
+func (r *bincodeReader) byteVec() ([]byte, error) {
+	n, err := r.varint()
 	if err != nil {
 		return nil, err
 	}
-
-	proveOptions := ProveOptions{}
-	if len(remaining) >= 1 {
-		proveOptions.DecreaseLimitOnEmptySubQueryResult = remaining[0] != 0
+	if n > uint64(len(r.data)-r.off) {
+		return nil, NewVerificationError("proof truncated (byte vector)")
 	}
+	out := make([]byte, n)
+	copy(out, r.data[r.off:r.off+int(n)])
+	r.off += int(n)
+	return out, nil
+}
 
+// maxLayerDepth bounds the recursive envelope decode; a real path is a few
+// segments deep.
+const maxLayerDepth = 64
+
+// DecodeGroveDBProof decodes a bincode-encoded grovedb `GroveDBProof` (only
+// the V0 variant exists) and rejects trailing bytes.
+func DecodeGroveDBProof(proofBytes []byte) (*GroveDBProof, error) {
+	r := &bincodeReader{data: proofBytes}
+	variant, err := r.varint()
+	if err != nil {
+		return nil, err
+	}
+	if variant != 0 {
+		return nil, NewVerificationError(fmt.Sprintf("unsupported proof version: %d", variant))
+	}
+	rootLayer, err := decodeLayerProof(r, 0)
+	if err != nil {
+		return nil, err
+	}
+	if r.off >= len(r.data) {
+		return nil, NewVerificationError("proof truncated (prove_options)")
+	}
+	opts := ProveOptions{DecreaseLimitOnEmptySubQueryResult: r.data[r.off] != 0}
+	r.off++
+	if r.off != len(r.data) {
+		return nil, NewVerificationError(fmt.Sprintf("proof has %d trailing bytes", len(r.data)-r.off))
+	}
 	return &GroveDBProof{
-		Version: int(version),
+		Version: 0,
 		Proof: &GroveDBProofV0{
 			RootLayer:    rootLayer,
-			ProveOptions: proveOptions,
+			ProveOptions: opts,
 		},
 	}, nil
 }
 
-func decodeLayerProof(data []byte) (*LayerProof, []byte, error) {
-	if len(data) < 4 {
-		return nil, nil, NewVerificationError("layer proof too short")
+func decodeLayerProof(r *bincodeReader, depth int) (*LayerProof, error) {
+	if depth > maxLayerDepth {
+		return nil, NewVerificationError("layer proof nesting too deep")
 	}
-
-	// Merk proof length (little-endian u32)
-	merkProofLen := binary.LittleEndian.Uint32(data[:4])
-	offset := 4
-
-	if len(data) < offset+int(merkProofLen) {
-		return nil, nil, NewVerificationError("incomplete merk proof data")
+	merkProof, err := r.byteVec()
+	if err != nil {
+		return nil, err
 	}
-
-	merkProof := make([]byte, merkProofLen)
-	copy(merkProof, data[offset:offset+int(merkProofLen)])
-	offset += int(merkProofLen)
-
+	count, err := r.varint()
+	if err != nil {
+		return nil, err
+	}
 	lowerLayers := make(map[string]*LayerProof)
-
-	// Check if there are lower layers
-	if len(data) >= offset+4 {
-		lowerLayersCount := binary.LittleEndian.Uint32(data[offset:])
-		offset += 4
-
-		for i := uint32(0); i < lowerLayersCount; i++ {
-			if len(data) < offset+4 {
-				break
-			}
-
-			// Key length
-			keyLen := binary.LittleEndian.Uint32(data[offset:])
-			offset += 4
-
-			if len(data) < offset+int(keyLen) {
-				break
-			}
-
-			// Key
-			key := make([]byte, keyLen)
-			copy(key, data[offset:offset+int(keyLen)])
-			offset += int(keyLen)
-
-			// Nested layer proof
-			nestedProof, remaining, err := decodeLayerProof(data[offset:])
-			if err != nil {
-				return nil, nil, err
-			}
-			offset = len(data) - len(remaining)
-
-			keyHex := hex.EncodeToString(key)
-			lowerLayers[keyHex] = nestedProof
+	for i := uint64(0); i < count; i++ {
+		key, err := r.byteVec()
+		if err != nil {
+			return nil, err
 		}
+		nested, err := decodeLayerProof(r, depth+1)
+		if err != nil {
+			return nil, err
+		}
+		lowerLayers[hex.EncodeToString(key)] = nested
 	}
-
 	return &LayerProof{
 		MerkProof:   merkProof,
 		LowerLayers: lowerLayers,
-	}, data[offset:], nil
+	}, nil
+}
+
+// CheckEnvelope is the check grovedb's own verifier does not make. The
+// verifier finds the next layer by the envelope's `lower_layers` map KEY,
+// which is not hash-bound: a prover who renames or drops the entry for a
+// subtree on the query path gets the same root hash with that subtree's
+// results silently gone, so a proof of "K = V" verifies as "K is absent".
+// Requiring a layer for every path segment closes it (once a layer is
+// present its root is hash-bound to the parent). `prove_options` is
+// prover-chosen bytes that steer limit accounting, so it is pinned to the
+// default the chain's prover uses.
+func CheckEnvelope(proof *GroveDBProof, expectedPath [][]byte) error {
+	if proof == nil || proof.Proof == nil || proof.Proof.RootLayer == nil {
+		return NewVerificationError("envelope: missing root layer")
+	}
+	if !proof.Proof.ProveOptions.DecreaseLimitOnEmptySubQueryResult {
+		return NewVerificationError("envelope: non-default prove_options")
+	}
+	layer := proof.Proof.RootLayer
+	for i, seg := range expectedPath {
+		next, ok := layer.LowerLayers[hex.EncodeToString(seg)]
+		if !ok {
+			return NewVerificationError(fmt.Sprintf(
+				"envelope: no lower layer for path segment %d (%q); the proof does not descend to the query path", i, seg))
+		}
+		layer = next
+	}
+	if len(layer.LowerLayers) != 0 {
+		return NewVerificationError("envelope: unexpected lower layers below the query path")
+	}
+	return nil
+}
+
+// VerifyProofAtPath verifies a proof and requires that it descends to
+// `expectedPath` (see CheckEnvelope). Use it whenever the query path is
+// known; a result set that is empty at this path is then a proven absence.
+func VerifyProofAtPath(proofBytes []byte, expectedPath [][]byte) (*VerificationResult, error) {
+	proof, err := DecodeGroveDBProof(proofBytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := CheckEnvelope(proof, expectedPath); err != nil {
+		return nil, err
+	}
+	return verifyDecoded(proof)
+}
+
+// VerifyProofAgainstRootAtPath is VerifyProofAtPath plus the root compare.
+func VerifyProofAgainstRootAtPath(proofBytes []byte, expectedPath [][]byte, expectedRootHash string) (*VerificationResult, error) {
+	result, err := VerifyProofAtPath(proofBytes, expectedPath)
+	if err != nil {
+		return nil, err
+	}
+	if result.RootHash != expectedRootHash {
+		return nil, NewVerificationError(fmt.Sprintf(
+			"root hash mismatch: expected %s, got %s",
+			expectedRootHash, result.RootHash))
+	}
+	return result, nil
+}
+
+func verifyDecoded(proof *GroveDBProof) (*VerificationResult, error) {
+	results := make([]QueryResult, 0)
+	rootHash, err := verifyLayerProof(proof.Proof.RootLayer, [][]byte{}, &results)
+	if err != nil {
+		return nil, err
+	}
+	return &VerificationResult{
+		RootHash: rootHash.String(),
+		Results:  results,
+	}, nil
 }
 
 // VerifyProof verifies a GroveDB proof and returns the verification result.
@@ -614,17 +711,10 @@ func VerifyProof(proofBytes []byte) (*VerificationResult, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	results := make([]QueryResult, 0)
-	rootHash, err := verifyLayerProof(proof.Proof.RootLayer, [][]byte{}, &results)
-	if err != nil {
-		return nil, err
+	if !proof.Proof.ProveOptions.DecreaseLimitOnEmptySubQueryResult {
+		return nil, NewVerificationError("envelope: non-default prove_options")
 	}
-
-	return &VerificationResult{
-		RootHash: rootHash.String(),
-		Results:  results,
-	}, nil
+	return verifyDecoded(proof)
 }
 
 func verifyLayerProof(layer *LayerProof, currentPath [][]byte, results *[]QueryResult) (CryptoHash, error) {
