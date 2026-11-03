@@ -134,7 +134,7 @@ if client.HasIdentity() {
 
 ### Request Signing
 
-With an identity set, the client signs each read where a DID's read rights apply (`GET /data/{sg}/{key}`, `GET /proof/{sg}/{key}`, and `POST /query`, `/sql`, and `/graphql` to the API) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list. Other requests it signs use the older form below, which the server also accepts in the first 30 s after it restarts, when it refuses nonce-signed requests.
+With an identity set, the client signs each read of subgrove data it sends to the API (`GET /data/{sg}/{key}`, `GET /proof/{sg}/{key}`, and `POST /query`, `/sql`, and `/graphql`) with a one-time nonce over the whole request. Only this form carries the DID's read rights: a Reader permission on a subgrove, or a place on a priced subgrove's free-reader list. Other requests it signs use the older form below, which the server also accepts in the first 30 s after it restarts, when it refuses nonce-signed requests.
 
 The headers are `X-DID`, `X-Public-Key-ID`, `X-Signature`, `X-Timestamp`, and `X-Nonce`. The signature is over eight lines:
 

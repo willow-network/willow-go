@@ -86,6 +86,8 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 		switch r.URL.Path {
 		case "/account/did:willow:a/nonce":
 			_, _ = w.Write([]byte(`{"success":true,"data":{"did":"did:willow:a","nonce":7}}`))
+		case "/upload/sg/f":
+			w.WriteHeader(http.StatusOK)
 		case "/tx/submit":
 			var body map[string]map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -120,9 +122,18 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 	if err := client.Files.Delete("sg", "f", signing); err != nil {
 		t.Fatal(err)
 	}
+	if err := client.Privacy.RotateSubgroveKey(ctx, "sg", 2, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Files.UnregisterStorageNode("did:willow:n", signing); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Files.Upload("sg", "f", "f.txt", []byte("hello"), srv.URL, signing); err != nil {
+		t.Fatal(err)
+	}
 
-	if len(bodies) != 3 {
-		t.Fatalf("got %d transactions, want 3", len(bodies))
+	if len(bodies) != 6 {
+		t.Fatalf("got %d transactions, want 6", len(bodies))
 	}
 	isNumberArray := func(v any, n int) bool {
 		a, ok := v.([]any)
@@ -149,5 +160,65 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 	del := bodies[2]["DeleteFileManifest"]
 	if !isNumberArray(del["signature"], 64) {
 		t.Errorf("DeleteFileManifest signature: %v", del["signature"])
+	}
+	rotate := bodies[3]["RotateSubgroveKey"]
+	if !isNumberArray(rotate["signature"], 64) {
+		t.Errorf("RotateSubgroveKey signature: %v", rotate["signature"])
+	}
+	unregister := bodies[4]["UnregisterStorageNode"]
+	if !isNumberArray(unregister["signature"], 64) {
+		t.Errorf("UnregisterStorageNode signature: %v", unregister["signature"])
+	}
+	manifest := bodies[5]["StoreFileManifest"]
+	if !isNumberArray(manifest["signature"], 64) || !isNumberArray(manifest["content_hash"], 32) ||
+		!isNumberArray(manifest["chunk_merkle_root"], 32) {
+		t.Errorf("StoreFileManifest byte fields: %v", manifest)
+	}
+}
+
+// A transaction is submitted once: after a 5xx it may already be in the mempool.
+func TestTransactionsAreNotResubmitted(t *testing.T) {
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"success":false,"data":null,"error":"broadcast failed"}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.submitTx(context.Background(), map[string]any{"RevokeSubgroveKey": map[string]any{}}); err == nil {
+		t.Fatal("a 502 was reported as success")
+	}
+	if calls != 1 {
+		t.Fatalf("submitted %d times, want 1", calls)
+	}
+}
+
+func TestKeyGrantReadsUnwrapTheEnvelope(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/key-grants/sg/did:willow:a":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"grantee_did":"did:willow:a","key_epoch":2,"grantee_public_key_id":"did:willow:a#key-1","ephemeral_public_key":[1,2],"encrypted_key":[3],"granted_by":"did:willow:o","granted_at":5}}`))
+		case "/key-grants/sg":
+			_, _ = w.Write([]byte(`{"success":true,"data":["did:willow:a","did:willow:b"]}`))
+		}
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetIdentity(vectorIdentity(t, Ed25519))
+	grant, err := client.Privacy.GetMyKeyGrant(context.Background(), "sg")
+	if err != nil || grant.KeyEpoch != 2 || len(grant.EphemeralPublicKey) != 2 || grant.EncryptedKey[0] != 3 {
+		t.Fatalf("GetMyKeyGrant = %+v, %v", grant, err)
+	}
+	grantees, err := client.Privacy.ListKeyGrantees(context.Background(), "sg")
+	if err != nil || len(grantees) != 2 {
+		t.Fatalf("ListKeyGrantees = %v, %v", grantees, err)
 	}
 }

@@ -631,7 +631,7 @@ func (c *Client) newAPIRequest(ctx context.Context, method, path string, payload
 
 // signAPIRequest signs a request to the API when an identity is set.
 //
-// A read where a DID's read rights apply (see carriesReadRights) is signed with
+// A read of subgrove data (see carriesReadRights) is signed with
 // a one-time nonce over its method, path and query, and body: only that form
 // carries the rights. payload must be the exact bytes the request sends, and
 // each call draws a fresh nonce, so each attempt of a retried request is signed
@@ -662,9 +662,9 @@ func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 	return nil
 }
 
-// carriesReadRights reports whether the API applies a DID's read rights to a
-// request: GET /data/{sg}/{key}, GET /proof/{sg}/{key}, POST /query/{sg},
-// /sql/{sg}, /graphql/{sg}, and POST /a2a.
+// carriesReadRights reports whether a request is a read of subgrove data, the
+// reads the API can gate by a DID's read rights: GET /data/{sg}/{key}, GET
+// /proof/{sg}/{key}, POST /query/{sg}, /sql/{sg}, /graphql/{sg}, and POST /a2a.
 func carriesReadRights(method, target string) bool {
 	path := target
 	if q := strings.IndexByte(path, '?'); q >= 0 {

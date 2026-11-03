@@ -132,11 +132,17 @@ func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, subgroveID string
 
 	identity := p.client.GetIdentity()
 	path := fmt.Sprintf("/key-grants/%s/%s", subgroveID, identity.DID())
-	var grant EncryptedKeyGrant
-	if err := p.client.get(ctx, path, &grant); err != nil {
+	// The API answers { success, data: grant }.
+	var envelope struct {
+		Data *EncryptedKeyGrant `json:"data"`
+	}
+	if err := p.client.get(ctx, path, &envelope); err != nil {
 		return nil, err
 	}
-	return &grant, nil
+	if envelope.Data == nil {
+		return nil, NewNotFoundError("key grant")
+	}
+	return envelope.Data, nil
 }
 
 // ListKeyGrantees retrieves the list of DIDs that have been granted access
@@ -147,11 +153,14 @@ func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, subgroveID stri
 	}
 
 	path := fmt.Sprintf("/key-grants/%s", subgroveID)
-	var grantees []string
-	if err := p.client.get(ctx, path, &grantees); err != nil {
+	// The API answers { success, data: [did, ...] }.
+	var envelope struct {
+		Data []string `json:"data"`
+	}
+	if err := p.client.get(ctx, path, &envelope); err != nil {
 		return nil, err
 	}
-	return grantees, nil
+	return envelope.Data, nil
 }
 
 // GetKeyGrantProof retrieves the GroveDB Merkle proof for a key grant.
