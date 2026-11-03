@@ -533,6 +533,28 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	return nil
 }
 
+// nextTxNonce returns the nonce the DID's next transaction must carry: one past
+// the account nonce the API reports at /account/{did}/nonce.
+func (c *Client) nextTxNonce(ctx context.Context, did string) (uint64, error) {
+	var envelope struct {
+		Data *struct {
+			Nonce uint64 `json:"nonce"`
+		} `json:"data"`
+		Error *string `json:"error"`
+	}
+	if err := c.get(ctx, fmt.Sprintf("/account/%s/nonce", did), &envelope); err != nil {
+		return 0, err
+	}
+	if envelope.Data == nil {
+		message := "no nonce in /account response"
+		if envelope.Error != nil {
+			message = *envelope.Error
+		}
+		return 0, NewValidationError(message)
+	}
+	return envelope.Data.Nonce + 1, nil
+}
+
 // submitTx posts a JSON transaction to the API's /tx/submit, which hands it to
 // CheckTx, and returns an error unless CheckTx accepted it.
 func (c *Client) submitTx(ctx context.Context, tx interface{}) error {
@@ -554,8 +576,26 @@ func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
 		} `json:"data"`
 		Error *string `json:"error"`
 	}
-	if err := c.post(ctx, "/tx/submit", json.RawMessage(body), &envelope); err != nil {
+	// Sent once: a transaction that reached the mempool before a 5xx would be
+	// resubmitted by a retry.
+	req, err := c.newAPIRequest(ctx, http.MethodPost, "/tx/submit", body)
+	if err != nil {
 		return err
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return NewNetworkError("transaction submission failed", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return NewNetworkError("failed to read /tx/submit response", err)
+	}
+	if resp.StatusCode >= 400 {
+		return c.handleErrorResponse(resp.StatusCode, respBody)
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return NewSerializationError("failed to parse /tx/submit response", err)
 	}
 	if !envelope.Success || envelope.Data == nil {
 		message := "transaction submission failed"
@@ -589,11 +629,15 @@ func (c *Client) newAPIRequest(ctx context.Context, method, path string, payload
 	return req, nil
 }
 
-// signAPIRequest signs a request to the API with a one-time nonce over its
-// method, path and query, and body, when an identity is set. That form carries
-// the DID's read rights; the older {METHOD}:{PATH}:{TIMESTAMP} form does not.
-// payload must be the exact bytes the request sends. Each call draws a fresh
-// nonce, so sign each attempt of a retried request anew.
+// signAPIRequest signs a request to the API when an identity is set.
+//
+// A read where a DID's read rights apply (see carriesReadRights) is signed with
+// a one-time nonce over its method, path and query, and body: only that form
+// carries the rights. payload must be the exact bytes the request sends, and
+// each call draws a fresh nonce, so each attempt of a retried request is signed
+// anew. Any other request is signed in the older {METHOD}:{PATH}:{TIMESTAMP}
+// form, which the server also accepts for 30 s after a restart, when it refuses
+// nonce-signed requests, and with up to 300 s of clock skew.
 func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 	c.identityMu.RLock()
 	identity := c.identity
@@ -601,7 +645,14 @@ func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 	if identity == nil {
 		return nil
 	}
-	headers, err := identity.SignRequestWithNonce(req.Method, c.apiTarget(req.URL), payload)
+	target := c.apiTarget(req.URL)
+	var headers map[string]string
+	var err error
+	if carriesReadRights(req.Method, target) {
+		headers, err = identity.SignRequestWithNonce(req.Method, target, payload)
+	} else {
+		headers, err = identity.SignRequest(req.Method, target)
+	}
 	if err != nil {
 		return err
 	}
@@ -609,6 +660,29 @@ func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 		req.Header.Set(k, v)
 	}
 	return nil
+}
+
+// carriesReadRights reports whether the API applies a DID's read rights to a
+// request: GET /data/{sg}/{key}, GET /proof/{sg}/{key}, POST /query/{sg},
+// /sql/{sg}, /graphql/{sg}, and POST /a2a.
+func carriesReadRights(method, target string) bool {
+	path := target
+	if q := strings.IndexByte(path, '?'); q >= 0 {
+		path = path[:q]
+	}
+	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	switch method {
+	case http.MethodGet:
+		return len(segments) == 3 && (segments[0] == "data" || segments[0] == "proof")
+	case http.MethodPost:
+		switch segments[0] {
+		case "query", "sql", "graphql":
+			return len(segments) == 2
+		case "a2a":
+			return len(segments) == 1
+		}
+	}
+	return false
 }
 
 // apiTarget is the path and query the API receives for u: the request line's

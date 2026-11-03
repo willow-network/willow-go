@@ -157,13 +157,14 @@ func TestNewRequestNonce(t *testing.T) {
 func verifyNonceSigned(t *testing.T, r *http.Request, body []byte, pub ed25519.PublicKey) {
 	t.Helper()
 	if r.Header.Get("X-Nonce") == "" {
-		t.Fatalf("%s %s: no X-Nonce", r.Method, r.URL.RequestURI())
+		t.Errorf("%s %s: no X-Nonce", r.Method, r.URL.RequestURI())
+		return
 	}
 	msg := SignedRequestMessage(r.Header.Get("X-DID"), r.Header.Get("X-Public-Key-ID"), r.Method,
 		r.URL.RequestURI(), r.Header.Get("X-Timestamp"), r.Header.Get("X-Nonce"), body)
 	sig, err := hex.DecodeString(r.Header.Get("X-Signature"))
 	if err != nil || !ed25519.Verify(pub, []byte(msg), sig) {
-		t.Fatalf("%s %s: signature does not cover the request as received", r.Method, r.URL.RequestURI())
+		t.Errorf("%s %s: signature does not cover the request as received", r.Method, r.URL.RequestURI())
 	}
 }
 
@@ -240,5 +241,58 @@ func TestAPITargetDropsTheBaseURLPath(t *testing.T) {
 	}
 	if got := client.apiTarget(req.URL); got != "/data/sg/k?include_proof=false" {
 		t.Fatalf("apiTarget = %q", got)
+	}
+}
+
+func TestOnlyReadsWithRightsAreNonceSigned(t *testing.T) {
+	cases := []struct {
+		method, target string
+		want           bool
+	}{
+		{"GET", "/data/sg/k", true},
+		{"GET", "/data/sg/k?include_proof=false", true},
+		{"GET", "/proof/sg/k", true},
+		{"POST", "/query/sg", true},
+		{"POST", "/sql/sg", true},
+		{"POST", "/graphql/sg", true},
+		{"POST", "/a2a", true},
+		{"GET", "/proof/key-grant/sg/did:willow:a", false},
+		{"GET", "/proof/file/sg/k", false},
+		{"GET", "/did/did:willow:a/permissions", false},
+		{"GET", "/subgroves", false},
+		{"PUT", "/data/sg/k", false},
+		{"POST", "/tx/submit", false},
+		{"GET", "/key-grants/sg/did:willow:a", false},
+	}
+	for _, c := range cases {
+		if got := carriesReadRights(c.method, c.target); got != c.want {
+			t.Errorf("carriesReadRights(%s %s) = %v, want %v", c.method, c.target, got, c.want)
+		}
+	}
+}
+
+// Other requests keep the older form, which the server accepts across restarts.
+func TestOtherRequestsUseTheOlderForm(t *testing.T) {
+	id := vectorIdentity(t, Ed25519)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-Nonce") != "" {
+			t.Errorf("%s %s carries a nonce", r.Method, r.URL.Path)
+		}
+		msg := r.Method + ":" + r.URL.Path + ":" + r.Header.Get("X-Timestamp")
+		sig, err := hex.DecodeString(r.Header.Get("X-Signature"))
+		if err != nil || !ed25519.Verify(id.KeyPair.PublicKey, []byte(msg), sig) {
+			t.Errorf("%s %s: older-form signature does not verify", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"data":[]}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetIdentity(id)
+	if _, err := client.Registration.GetPermissions(context.Background(), "did:willow:a"); err != nil {
+		t.Fatal(err)
 	}
 }

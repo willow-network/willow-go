@@ -395,7 +395,7 @@ type ApiResponse[T any] struct {
 type Permission struct {
 	Did        string `json:"did"`
 	SubgroveID string `json:"subgrove_id,omitempty"`
-	// Role is the subgrove role granted (for example "Reader" or "Writer").
+	// Role is the subgrove role granted, in lowercase (for example "reader").
 	Role       string   `json:"role,omitempty"`
 	Actions    []string `json:"actions"`
 	GrantedBy  string   `json:"granted_by"`
