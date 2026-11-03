@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 // CommitmentFrequency defines how often a provider must publish state root
@@ -108,10 +110,11 @@ type EncryptedKeyGrant struct {
 	GranteeDID         string `json:"grantee_did"`
 	KeyEpoch           uint32 `json:"key_epoch"`
 	GranteePublicKeyID string `json:"grantee_public_key_id"`
-	EphemeralPublicKey []byte `json:"ephemeral_public_key"`
-	EncryptedKey       []byte `json:"encrypted_key"`
-	GrantedBy          string `json:"granted_by"`
-	GrantedAt          uint64 `json:"granted_at"`
+	// Byte fields are JSON arrays of numbers, as the chain's types encode them.
+	EphemeralPublicKey consensus.ByteArray `json:"ephemeral_public_key"`
+	EncryptedKey       consensus.ByteArray `json:"encrypted_key"`
+	GrantedBy          string              `json:"granted_by"`
+	GrantedAt          uint64              `json:"granted_at"`
 }
 
 // PrivacyOperations provides methods for managing private subgroves,
@@ -129,11 +132,17 @@ func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, subgroveID string
 
 	identity := p.client.GetIdentity()
 	path := fmt.Sprintf("/key-grants/%s/%s", subgroveID, identity.DID())
-	var grant EncryptedKeyGrant
-	if err := p.client.get(ctx, path, &grant); err != nil {
+	// The API answers { success, data: grant }.
+	var envelope struct {
+		Data *EncryptedKeyGrant `json:"data"`
+	}
+	if err := p.client.get(ctx, path, &envelope); err != nil {
 		return nil, err
 	}
-	return &grant, nil
+	if envelope.Data == nil {
+		return nil, NewNotFoundError("key grant")
+	}
+	return envelope.Data, nil
 }
 
 // ListKeyGrantees retrieves the list of DIDs that have been granted access
@@ -144,11 +153,14 @@ func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, subgroveID stri
 	}
 
 	path := fmt.Sprintf("/key-grants/%s", subgroveID)
-	var grantees []string
-	if err := p.client.get(ctx, path, &grantees); err != nil {
+	// The API answers { success, data: [did, ...] }.
+	var envelope struct {
+		Data []string `json:"data"`
+	}
+	if err := p.client.get(ctx, path, &envelope); err != nil {
 		return nil, err
 	}
-	return grantees, nil
+	return envelope.Data, nil
 }
 
 // GetKeyGrantProof retrieves the GroveDB Merkle proof for a key grant.
@@ -164,12 +176,12 @@ func (p *PrivacyOperations) GetKeyGrantProof(ctx context.Context, subgroveID, di
 
 // grantSubgroveKeyRequest is the internal request body for the GrantSubgroveKey transaction.
 type grantSubgroveKeyRequest struct {
-	SubgroveID        string            `json:"subgrove_id"`
-	EncryptedKeyGrant EncryptedKeyGrant `json:"encrypted_key_grant"`
-	SenderDID         string            `json:"sender_did"`
-	Signature         string            `json:"signature"`
-	PublicKeyID       string            `json:"public_key_id"`
-	Nonce             uint64            `json:"nonce"`
+	SubgroveID        string              `json:"subgrove_id"`
+	EncryptedKeyGrant EncryptedKeyGrant   `json:"encrypted_key_grant"`
+	SenderDID         string              `json:"sender_did"`
+	Signature         consensus.ByteArray `json:"signature"`
+	PublicKeyID       string              `json:"public_key_id"`
+	Nonce             uint64              `json:"nonce"`
 }
 
 // GrantSubgroveKey broadcasts a GrantSubgroveKey transaction, granting the
@@ -181,17 +193,15 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID str
 
 	identity := p.client.GetIdentity()
 
-	// Retrieve the current nonce for signing
-	didInfo, err := p.client.GetDID(ctx, identity.DID())
+	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
 	if err != nil {
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
-	nonce := didInfo.Nonce + 1
 
 	message := fmt.Sprintf("GrantSubgroveKey:%s:%s:%s:%d",
 		subgroveID, grant.GranteeDID, identity.DID(), nonce)
 
-	signature, err := identity.SignHex([]byte(message))
+	signature, err := identity.Sign([]byte(message))
 	if err != nil {
 		return err
 	}
@@ -209,17 +219,17 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID str
 		"GrantSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }
 
 // revokeSubgroveKeyRequest is the internal request body for the RevokeSubgroveKey transaction.
 type revokeSubgroveKeyRequest struct {
-	SubgroveID string `json:"subgrove_id"`
-	RevokeeDID string `json:"revokee_did"`
-	SenderDID  string `json:"sender_did"`
-	Signature  string `json:"signature"`
-	PublicKeyID string `json:"public_key_id"`
-	Nonce      uint64 `json:"nonce"`
+	SubgroveID  string              `json:"subgrove_id"`
+	RevokeeDID  string              `json:"revokee_did"`
+	SenderDID   string              `json:"sender_did"`
+	Signature   consensus.ByteArray `json:"signature"`
+	PublicKeyID string              `json:"public_key_id"`
+	Nonce       uint64              `json:"nonce"`
 }
 
 // RevokeSubgroveKey broadcasts a RevokeSubgroveKey transaction, revoking
@@ -231,16 +241,15 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, r
 
 	identity := p.client.GetIdentity()
 
-	didInfo, err := p.client.GetDID(ctx, identity.DID())
+	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
 	if err != nil {
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
-	nonce := didInfo.Nonce + 1
 
 	message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
 		subgroveID, revokeeDID, identity.DID(), nonce)
 
-	signature, err := identity.SignHex([]byte(message))
+	signature, err := identity.Sign([]byte(message))
 	if err != nil {
 		return err
 	}
@@ -258,18 +267,18 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, r
 		"RevokeSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }
 
 // rotateSubgroveKeyRequest is the internal request body for the RotateSubgroveKey transaction.
 type rotateSubgroveKeyRequest struct {
-	SubgroveID string              `json:"subgrove_id"`
-	NewEpoch   uint32              `json:"new_epoch"`
-	NewGrants  []EncryptedKeyGrant `json:"new_grants"`
-	SenderDID  string              `json:"sender_did"`
-	Signature  string              `json:"signature"`
-	PublicKeyID string             `json:"public_key_id"`
-	Nonce      uint64              `json:"nonce"`
+	SubgroveID  string              `json:"subgrove_id"`
+	NewEpoch    uint32              `json:"new_epoch"`
+	NewGrants   []EncryptedKeyGrant `json:"new_grants"`
+	SenderDID   string              `json:"sender_did"`
+	Signature   consensus.ByteArray `json:"signature"`
+	PublicKeyID string              `json:"public_key_id"`
+	Nonce       uint64              `json:"nonce"`
 }
 
 // RotateSubgroveKey broadcasts a RotateSubgroveKey transaction, rotating the
@@ -282,16 +291,15 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID st
 
 	identity := p.client.GetIdentity()
 
-	didInfo, err := p.client.GetDID(ctx, identity.DID())
+	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
 	if err != nil {
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
-	nonce := didInfo.Nonce + 1
 
 	message := fmt.Sprintf("RotateSubgroveKey:%s:%d:%s:%d",
 		subgroveID, newEpoch, identity.DID(), nonce)
 
-	signature, err := identity.SignHex([]byte(message))
+	signature, err := identity.Sign([]byte(message))
 	if err != nil {
 		return err
 	}
@@ -310,5 +318,5 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID st
 		"RotateSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }

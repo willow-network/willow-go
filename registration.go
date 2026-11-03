@@ -73,13 +73,14 @@ func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID 
 
 // GetPermissions retrieves permissions for a DID.
 func (r *RegistrationOperations) GetPermissions(ctx context.Context, did string) ([]Permission, error) {
-	var results []Permission
-	path := fmt.Sprintf("/permissions/%s", did)
-	err := r.client.get(ctx, path, &results)
-	if err != nil {
+	// The API answers { success, data: [...] }.
+	var envelope struct {
+		Data []Permission `json:"data"`
+	}
+	if err := r.client.get(ctx, fmt.Sprintf("/did/%s/permissions", did), &envelope); err != nil {
 		return nil, err
 	}
-	return results, nil
+	return envelope.Data, nil
 }
 
 // GrantPermission grants a permission to a DID.

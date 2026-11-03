@@ -38,6 +38,12 @@ func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if i.client.indexerURL == nil {
+		// Sent to the API, so it carries the identity's read rights.
+		if err := i.client.signAPIRequest(httpReq, body); err != nil {
+			return nil, err
+		}
+	}
 
 	resp, err := i.client.httpClient.Do(httpReq)
 	if err != nil {
@@ -152,6 +158,9 @@ func routeQuery[T any](
 			return zero, fmt.Errorf("build validator request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
+		if err := c.signAPIRequest(req, body); err != nil {
+			return zero, err
+		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			return zero, fmt.Errorf("validator request: %w", err)
@@ -309,6 +318,12 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	if i.client.indexerURL == nil {
+		// Sent to the API, so it carries the identity's read rights.
+		if err := i.client.signAPIRequest(httpReq, body); err != nil {
+			return nil, err
+		}
+	}
 
 	resp, err := i.client.httpClient.Do(httpReq)
 	if err != nil {

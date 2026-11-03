@@ -2,6 +2,7 @@ package willow
 
 import (
 	"bytes"
+	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/willow-network/willow-go/consensus"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -70,7 +72,7 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	merkleRoot := computeMerkleRoot(chunkHashes)
 
 	ownerDID := ""
-	signature := ""
+	var signatureBytes consensus.ByteArray
 	publicKeyID := ""
 	var nonce uint64
 
@@ -85,7 +87,11 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
 		}
-		signature = sig
+		decoded, err := decodeSignatureHex(sig)
+		if err != nil {
+			return nil, err
+		}
+		signatureBytes = decoded
 	}
 
 	// Submit StoreFileManifestTx to consensus
@@ -96,12 +102,12 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 			"filename":          filename,
 			"content_type":      guessContentType(filename),
 			"total_size":        len(data),
-			"content_hash":      contentHashHex,
+			"content_hash":      consensus.ByteArray(contentHash[:]),
 			"chunk_count":       chunkCount,
 			"chunk_size":        chunkSize,
-			"chunk_merkle_root": hex.EncodeToString(merkleRoot[:]),
+			"chunk_merkle_root": consensus.ByteArray(merkleRoot[:]),
 			"owner_did":         ownerDID,
-			"signature":         signature,
+			"signature":         signatureBytes,
 			"public_key_id":     publicKeyID,
 			"nonce":             nonce,
 		},
@@ -110,17 +116,8 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal manifest tx: %w", err)
 	}
-	txResp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return nil, fmt.Errorf("failed to broadcast manifest tx: %w", err)
-	}
-	txResp.Body.Close()
-	if txResp.StatusCode >= 400 {
-		return nil, fmt.Errorf("manifest tx rejected: HTTP %d", txResp.StatusCode)
 	}
 
 	// Upload chunks to storage node
@@ -189,8 +186,11 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 
 // Metadata gets file manifest metadata from the validator API.
 func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, error) {
-	url := fmt.Sprintf("%s/files/%s/%s", f.client.baseURL.String(), subgroveID, fileKey)
-	resp, err := http.Get(url)
+	req, err := f.client.newAPIRequest(context.Background(), http.MethodGet, fmt.Sprintf("/files/%s/%s", subgroveID, fileKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -209,8 +209,11 @@ func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, er
 
 // List lists all files in a subgrove.
 func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
-	url := fmt.Sprintf("%s/files/%s", f.client.baseURL.String(), subgroveID)
-	resp, err := http.Get(url)
+	req, err := f.client.newAPIRequest(context.Background(), http.MethodGet, fmt.Sprintf("/files/%s", subgroveID), nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := f.client.httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +230,7 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 // If signing is non-nil, the transaction will be signed with the provided credentials.
 func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigningOptions) error {
 	ownerDID := ""
-	signature := ""
+	var signatureBytes consensus.ByteArray
 	publicKeyID := ""
 	var nonce uint64
 
@@ -242,7 +245,11 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 		if err != nil {
 			return fmt.Errorf("failed to sign delete file tx: %w", err)
 		}
-		signature = sig
+		decoded, err := decodeSignatureHex(sig)
+		if err != nil {
+			return err
+		}
+		signatureBytes = decoded
 	}
 
 	deleteTx := map[string]interface{}{
@@ -250,7 +257,7 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 			"subgrove_id":   subgroveID,
 			"file_key":      fileKey,
 			"owner_did":     ownerDID,
-			"signature":     signature,
+			"signature":     signatureBytes,
 			"public_key_id": publicKeyID,
 			"nonce":         nonce,
 		},
@@ -259,17 +266,8 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete tx: %w", err)
 	}
-	resp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return fmt.Errorf("failed to broadcast delete tx: %w", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("delete tx rejected: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -287,10 +285,15 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 		return fmt.Errorf("failed to sign unregister storage node tx: %w", err)
 	}
 
+	sigBytes, err := decodeSignatureHex(sig)
+	if err != nil {
+		return err
+	}
+
 	tx := map[string]interface{}{
 		"UnregisterStorageNode": map[string]interface{}{
 			"node_did":      nodeDID,
-			"signature":     sig,
+			"signature":     sigBytes,
 			"public_key_id": signing.PublicKeyID,
 			"nonce":         signing.Nonce,
 		},
@@ -299,19 +302,20 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	if err != nil {
 		return fmt.Errorf("failed to marshal unregister storage node tx: %w", err)
 	}
-	resp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("unregister storage node tx rejected: HTTP %d", resp.StatusCode)
-	}
 	return nil
+}
+
+// decodeSignatureHex reads a SignFunc result (hex, optionally 0x-prefixed): the
+// chain's transactions carry signatures as bytes.
+func decodeSignatureHex(sig string) (consensus.ByteArray, error) {
+	b, err := hex.DecodeString(strings.TrimPrefix(sig, "0x"))
+	if err != nil {
+		return nil, fmt.Errorf("signature is not hex: %w", err)
+	}
+	return b, nil
 }
 
 func chunkData(data []byte, chunkSize int) [][]byte {

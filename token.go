@@ -44,13 +44,8 @@ func (t *TokenOperations) GetMyBalance(ctx context.Context) (*BalanceInfo, error
 // GetFeeSchedule retrieves the current fee schedule.
 func (t *TokenOperations) GetFeeSchedule(ctx context.Context) (*FeeSchedule, error) {
 	var schedule FeeSchedule
-	err := t.client.get(ctx, "/token/fees", &schedule)
-	if err != nil {
-		// Try alternate endpoint
-		err = t.client.get(ctx, "/fees/schedule", &schedule)
-		if err != nil {
-			return nil, err
-		}
+	if err := t.client.get(ctx, "/fees/schedule", &schedule); err != nil {
+		return nil, err
 	}
 	return &schedule, nil
 }
