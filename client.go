@@ -495,37 +495,18 @@ func (c *Client) delete(ctx context.Context, path string, result interface{}) er
 }
 
 func (c *Client) doRequest(ctx context.Context, method, path string, body, result interface{}) error {
-	var bodyReader io.Reader
+	var payload []byte
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
 		if err != nil {
 			return NewSerializationError("failed to marshal request body", err)
 		}
-		bodyReader = bytes.NewReader(jsonBody)
+		payload = jsonBody
 	}
 
-	req, err := http.NewRequestWithContext(ctx, method, c.buildURL(path), bodyReader)
-	if err != nil {
-		return NewNetworkError("failed to create request", err)
-	}
-
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-
-	// Add signature headers if identity is set
-	c.identityMu.RLock()
-	identity := c.identity
-	c.identityMu.RUnlock()
-	if identity != nil {
-		headers, err := identity.SignRequest(method, path)
-		if err == nil {
-			for k, v := range headers {
-				req.Header.Set(k, v)
-			}
-		}
-	}
-
-	resp, err := c.doWithRetry(ctx, req)
+	resp, err := c.doWithRetry(ctx, func() (*http.Request, error) {
+		return c.newAPIRequest(ctx, method, path, payload)
+	})
 	if err != nil {
 		return err
 	}
@@ -552,7 +533,99 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	return nil
 }
 
-func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Response, error) {
+// submitTx posts a JSON transaction to the API's /tx/submit, which hands it to
+// CheckTx, and returns an error unless CheckTx accepted it.
+func (c *Client) submitTx(ctx context.Context, tx interface{}) error {
+	body, err := json.Marshal(tx)
+	if err != nil {
+		return NewSerializationError("failed to marshal transaction", err)
+	}
+	return c.submitTxBytes(ctx, body)
+}
+
+// submitTxBytes is submitTx for a transaction already encoded as JSON.
+func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    *struct {
+			TxHash string `json:"tx_hash"`
+			Code   int    `json:"code"`
+			Log    string `json:"log"`
+		} `json:"data"`
+		Error *string `json:"error"`
+	}
+	if err := c.post(ctx, "/tx/submit", json.RawMessage(body), &envelope); err != nil {
+		return err
+	}
+	if !envelope.Success || envelope.Data == nil {
+		message := "transaction submission failed"
+		if envelope.Error != nil {
+			message = *envelope.Error
+		}
+		return NewTransactionError(message, "", 0)
+	}
+	if envelope.Data.Code != 0 {
+		return NewTransactionError(envelope.Data.Log, envelope.Data.TxHash, envelope.Data.Code)
+	}
+	return nil
+}
+
+// newAPIRequest builds one attempt of a JSON request to the API, signed by the
+// identity when one is set (see signAPIRequest).
+func (c *Client) newAPIRequest(ctx context.Context, method, path string, payload []byte) (*http.Request, error) {
+	var bodyReader io.Reader
+	if payload != nil {
+		bodyReader = bytes.NewReader(payload)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.buildURL(path), bodyReader)
+	if err != nil {
+		return nil, NewNetworkError("failed to create request", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	if err := c.signAPIRequest(req, payload); err != nil {
+		return nil, err
+	}
+	return req, nil
+}
+
+// signAPIRequest signs a request to the API with a one-time nonce over its
+// method, path and query, and body, when an identity is set. That form carries
+// the DID's read rights; the older {METHOD}:{PATH}:{TIMESTAMP} form does not.
+// payload must be the exact bytes the request sends. Each call draws a fresh
+// nonce, so sign each attempt of a retried request anew.
+func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
+	c.identityMu.RLock()
+	identity := c.identity
+	c.identityMu.RUnlock()
+	if identity == nil {
+		return nil
+	}
+	headers, err := identity.SignRequestWithNonce(req.Method, c.apiTarget(req.URL), payload)
+	if err != nil {
+		return err
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	return nil
+}
+
+// apiTarget is the path and query the API receives for u: the request line's
+// target, less any path the API base URL carries (a proxy mounted under a path
+// strips it before the API sees the request).
+func (c *Client) apiTarget(u *url.URL) string {
+	target := u.RequestURI()
+	if base := strings.TrimSuffix(c.baseURL.EscapedPath(), "/"); base != "" && strings.HasPrefix(target, base+"/") {
+		target = target[len(base):]
+	}
+	return target
+}
+
+// doWithRetry sends the request newReq builds, retrying network errors and 5xx
+// answers with backoff. Each attempt is built anew, so its body is whole and a
+// signed attempt carries its own nonce.
+func (c *Client) doWithRetry(ctx context.Context, newReq func() (*http.Request, error)) (*http.Response, error) {
 	var lastErr error
 	backoff := c.retryConfig.InitialBackoff
 
@@ -569,11 +642,12 @@ func (c *Client) doWithRetry(ctx context.Context, req *http.Request) (*http.Resp
 			if backoff > c.retryConfig.MaxBackoff {
 				backoff = c.retryConfig.MaxBackoff
 			}
-
-			// Clone request for retry
-			req = req.Clone(ctx)
 		}
 
+		req, err := newReq()
+		if err != nil {
+			return nil, err
+		}
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
 			lastErr = NewNetworkError("request failed", err)

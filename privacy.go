@@ -209,7 +209,7 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID str
 		"GrantSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }
 
 // revokeSubgroveKeyRequest is the internal request body for the RevokeSubgroveKey transaction.
@@ -258,7 +258,7 @@ func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, r
 		"RevokeSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }
 
 // rotateSubgroveKeyRequest is the internal request body for the RotateSubgroveKey transaction.
@@ -310,5 +310,5 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID st
 		"RotateSubgroveKey": req,
 	}
 
-	return p.client.post(ctx, "/broadcast_tx", tx, nil)
+	return p.client.submitTx(ctx, tx)
 }

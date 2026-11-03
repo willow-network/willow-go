@@ -1,11 +1,15 @@
 package willow
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"math/big"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec/v2"
@@ -136,9 +140,9 @@ func signSecp256k1(privateKey, message []byte) ([]byte, error) {
 		return nil, NewCryptoError("invalid secp256k1 private key", nil)
 	}
 
-	// Hash the message with SHA256 for secp256k1 signing
-	hash := sha256Hash(message)
-	signature := ecdsa.Sign(privKey, hash)
+	// Willow verifies secp256k1 signatures over the Keccak-256 (Ethereum's
+	// hash, not FIPS-202 SHA3-256) of the message.
+	signature := ecdsa.Sign(privKey, keccak256(message))
 	return signature.Serialize(), nil
 }
 
@@ -167,13 +171,28 @@ func verifySecp256k1(publicKey, message, signature []byte) (bool, error) {
 		return false, NewCryptoError("invalid secp256k1 public key", err)
 	}
 
-	sig, err := ecdsa.ParseSignature(signature)
-	if err != nil {
-		return false, NewCryptoError("invalid secp256k1 signature", err)
+	// Like the server: a 64-byte compact r||s, else DER; lower-S only.
+	var sig *ecdsa.Signature
+	if len(signature) == 64 {
+		var r, s btcec.ModNScalar
+		if r.SetByteSlice(signature[:32]) || s.SetByteSlice(signature[32:]) ||
+			r.IsZero() || s.IsZero() || s.IsOverHalfOrder() {
+			return false, nil
+		}
+		sig = ecdsa.NewSignature(&r, &s)
+	} else {
+		parsed, err := ecdsa.ParseDERSignature(signature)
+		if err != nil {
+			return false, NewCryptoError("invalid secp256k1 signature", err)
+		}
+		// Serialize writes canonical lower-S DER, so this refuses any other.
+		if !bytes.Equal(parsed.Serialize(), signature) {
+			return false, nil
+		}
+		sig = parsed
 	}
 
-	hash := sha256Hash(message)
-	return sig.Verify(hash, pubKey), nil
+	return sig.Verify(keccak256(message), pubKey), nil
 }
 
 // Multicodec prefixes for the public-key types embedded in a self-certifying
@@ -333,13 +352,19 @@ func (i *Identity) SignHex(message []byte) (string, error) {
 	return hex.EncodeToString(sig), nil
 }
 
-// SignRequest signs a request and returns the authentication headers.
-// Message format: {METHOD}:{PATH}:{TIMESTAMP}
+// SignRequest signs a request in the server's older form and returns the
+// authentication headers. The message is {METHOD}:{PATH}:{TIMESTAMP}, where PATH
+// is the path alone: the server verifies the request's path without its query,
+// so any query string in path is left out of the message (see
+// LegacyRequestMessage).
+//
+// This form proves the DID but carries none of its read rights (a Reader
+// permission or a free-reader entry), and anyone who sees it can replay it for
+// five minutes with any body. The Client signs every request to the API with
+// SignRequestWithNonce instead.
 func (i *Identity) SignRequest(method, path string) (map[string]string, error) {
-	timestamp := fmt.Sprintf("%d", time.Now().Unix())
-	message := fmt.Sprintf("%s:%s:%s", method, path, timestamp)
-
-	signature, err := i.SignHex([]byte(message))
+	timestamp := strconv.FormatInt(time.Now().Unix(), 10)
+	signature, err := i.signRequestMessage(LegacyRequestMessage(method, path, timestamp))
 	if err != nil {
 		return nil, err
 	}
@@ -350,6 +375,92 @@ func (i *Identity) SignRequest(method, path string) (map[string]string, error) {
 		"X-Signature":     signature,
 		"X-Timestamp":     timestamp,
 	}, nil
+}
+
+// LegacyRequestMessage is the message SignRequest signs:
+// {METHOD}:{PATH}:{TIMESTAMP}, with any query string dropped from path.
+func LegacyRequestMessage(method, path, timestamp string) string {
+	if q := strings.IndexByte(path, '?'); q >= 0 {
+		path = path[:q]
+	}
+	return method + ":" + path + ":" + timestamp
+}
+
+// SignedRequestMessage is the message a nonce-signed request signs: a version
+// line, then one per line the DID, its key's id, the method, the path and query
+// exactly as sent, the Unix timestamp, the nonce, and the hex SHA-256 of the
+// body (of no bytes, for a request without one).
+func SignedRequestMessage(did, publicKeyID, method, pathAndQuery, timestamp, nonce string, body []byte) string {
+	digest := sha256.Sum256(body)
+	return strings.Join([]string{
+		"willow-request-v2",
+		did,
+		publicKeyID,
+		method,
+		pathAndQuery,
+		timestamp,
+		nonce,
+		hex.EncodeToString(digest[:]),
+	}, "\n")
+}
+
+// NewRequestNonce returns a fresh nonce for a nonce-signed request: 32 hex
+// characters from 16 random bytes. The server accepts 16 to 128 characters of
+// A-Z a-z 0-9 - _, and each (DID, nonce) only once.
+func NewRequestNonce() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", NewCryptoError("failed to generate request nonce", err)
+	}
+	return hex.EncodeToString(b[:]), nil
+}
+
+// SignRequestWithNonce signs a request with a one-time nonce over the whole
+// request and returns the authentication headers, X-Nonce among them.
+//
+// pathAndQuery is the request target exactly as the server receives it, query
+// string included; body is the exact bytes sent (nil for none). The timestamp
+// is now, and the server accepts it for 300 seconds. Each signature is accepted
+// once, so sign every attempt of a retried request anew.
+//
+// Only this form carries the DID's read rights: a Reader permission, or an
+// entry on a priced subgrove's free-reader list.
+func (i *Identity) SignRequestWithNonce(method, pathAndQuery string, body []byte) (map[string]string, error) {
+	nonce, err := NewRequestNonce()
+	if err != nil {
+		return nil, err
+	}
+	return i.signRequestWithNonceAt(method, pathAndQuery, body, strconv.FormatInt(time.Now().Unix(), 10), nonce)
+}
+
+func (i *Identity) signRequestWithNonceAt(method, pathAndQuery string, body []byte, timestamp, nonce string) (map[string]string, error) {
+	message := SignedRequestMessage(i.DID(), i.PublicKeyID(), method, pathAndQuery, timestamp, nonce, body)
+	signature, err := i.signRequestMessage(message)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		"X-DID":           i.DID(),
+		"X-Public-Key-ID": i.PublicKeyID(),
+		"X-Signature":     signature,
+		"X-Timestamp":     timestamp,
+		"X-Nonce":         nonce,
+	}, nil
+}
+
+// signRequestMessage signs a request message and encodes the signature as the
+// server decodes X-Signature: Ed25519 as hex, secp256k1 as 0x-prefixed hex. The
+// server reads an unprefixed secp256k1 signature as base64 first, and most hex
+// strings are valid base64.
+func (i *Identity) signRequestMessage(message string) (string, error) {
+	signature, err := i.Sign([]byte(message))
+	if err != nil {
+		return "", err
+	}
+	if i.KeyPair.Algorithm == Secp256k1 {
+		return "0x" + hex.EncodeToString(signature), nil
+	}
+	return hex.EncodeToString(signature), nil
 }
 
 // FormatRegisterSubgroveMessage formats the message to sign for subgrove registration.

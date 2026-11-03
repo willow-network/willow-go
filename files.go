@@ -2,6 +2,7 @@ package willow
 
 import (
 	"bytes"
+	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -110,17 +111,8 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal manifest tx: %w", err)
 	}
-	txResp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return nil, fmt.Errorf("failed to broadcast manifest tx: %w", err)
-	}
-	txResp.Body.Close()
-	if txResp.StatusCode >= 400 {
-		return nil, fmt.Errorf("manifest tx rejected: HTTP %d", txResp.StatusCode)
 	}
 
 	// Upload chunks to storage node
@@ -259,17 +251,8 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete tx: %w", err)
 	}
-	resp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return fmt.Errorf("failed to broadcast delete tx: %w", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("delete tx rejected: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }
@@ -299,17 +282,8 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	if err != nil {
 		return fmt.Errorf("failed to marshal unregister storage node tx: %w", err)
 	}
-	resp, err := http.Post(
-		f.client.baseURL.String()+"/broadcast_tx",
-		"application/json",
-		bytes.NewReader(txBody),
-	)
-	if err != nil {
+	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode >= 400 {
-		return fmt.Errorf("unregister storage node tx rejected: HTTP %d", resp.StatusCode)
 	}
 	return nil
 }

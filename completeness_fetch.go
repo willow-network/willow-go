@@ -192,7 +192,13 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 // order served. A non-200 response (e.g. 404 when the indexer retained no
 // matched logs, or the block is not finalized) is surfaced as an error: the
 // block is not verifiable from this indexer.
+//
+// Only indexers serve matched logs, so the client needs an indexer URL
+// (WithIndexerURL).
 func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockNumber uint64) ([]Log, error) {
+	if c.indexerURL == nil {
+		return nil, NewConfigError("matched logs are served by indexers: configure one with WithIndexerURL")
+	}
 	url := fmt.Sprintf("%s/completeness/%s/%d/matched-logs", c.IndexerBaseURL(), subgroveID, blockNumber)
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

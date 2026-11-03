@@ -393,8 +393,10 @@ type ApiResponse[T any] struct {
 
 // Permission represents a permission entry.
 type Permission struct {
-	Did        string   `json:"did"`
-	SubgroveID string   `json:"subgrove_id,omitempty"`
+	Did        string `json:"did"`
+	SubgroveID string `json:"subgrove_id,omitempty"`
+	// Role is the subgrove role granted (for example "Reader" or "Writer").
+	Role       string   `json:"role,omitempty"`
 	Actions    []string `json:"actions"`
 	GrantedBy  string   `json:"granted_by"`
 	GrantedAt  int64    `json:"granted_at"`
