@@ -413,7 +413,13 @@ func jsonObjectEntries(data []byte) ([]jsonEntry, error) {
 //	GrantedBy: <grant.GrantedBy>
 //	GrantedAt: <grant.GrantedAt>
 //	Nonce: <nonce>
+//
+// It refuses a grant whose grantee isn't a DID ("did:willow:" then ASCII
+// letters, digits, '-', or '_', at most 128 bytes), which the chain refuses.
 func FormatGrantSubgroveKeyMessage(subgroveID, senderDID string, grant EncryptedKeyGrant, nonce uint64) (string, error) {
+	if err := validateGrantees([]EncryptedKeyGrant{grant}); err != nil {
+		return "", err
+	}
 	return newSignedMessage("GrantSubgroveKey").
 		text("Subgrove", subgroveID).
 		text("Sender", senderDID).
@@ -433,7 +439,13 @@ func FormatGrantSubgroveKeyMessage(subgroveID, senderDID string, grant Encrypted
 //	<for each grant, in order, its seven lines Grantee … GrantedAt, as in
 //	FormatGrantSubgroveKeyMessage>
 //	Nonce: <nonce>
+//
+// It refuses a rotation with a grant whose grantee isn't a DID, which the
+// chain refuses.
 func FormatRotateSubgroveKeyMessage(subgroveID, senderDID string, newEpoch uint32, grants []EncryptedKeyGrant, nonce uint64) (string, error) {
+	if err := validateGrantees(grants); err != nil {
+		return "", err
+	}
 	m := newSignedMessage("RotateSubgroveKey").
 		text("Subgrove", subgroveID).
 		text("Sender", senderDID).
@@ -456,6 +468,47 @@ func FormatUnregisterStorageNodeMessage(nodeDID string, nonce uint64) (string, e
 		text("Node", nodeDID).
 		line("Nonce", strconv.FormatUint(nonce, 10)).
 		build()
+}
+
+// validateGrantees refuses grants whose grantee isn't a DID, which the chain
+// refuses.
+func validateGrantees(grants []EncryptedKeyGrant) error {
+	for i, g := range grants {
+		label := "grantee"
+		if len(grants) > 1 {
+			label = fmt.Sprintf("grant %d's grantee", i)
+		}
+		if err := validateWillowDID(g.GranteeDID, label); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// revokeSubgroveKeyMessage returns the message a RevokeSubgroveKey
+// transaction is signed over, "RevokeSubgroveKey:<subgroveID>:<revokeeDID>:
+// <senderDID>:<nonce>". It refuses what the chain refuses: a subgrove id
+// holding ':', or a revokee or sender that isn't a DID.
+func revokeSubgroveKeyMessage(subgroveID, revokeeDID, senderDID string, nonce uint64) (string, error) {
+	if err := validateRevoke(subgroveID, revokeeDID, senderDID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d", subgroveID, revokeeDID, senderDID, nonce), nil
+}
+
+// validateRevoke applies the chain's rules for a RevokeSubgroveKey: a subgrove
+// id that is set and holds no ':', and a revokee and sender that are DIDs.
+func validateRevoke(subgroveID, revokeeDID, senderDID string) error {
+	if subgroveID == "" {
+		return NewValidationError("RevokeSubgroveKey needs a subgrove id")
+	}
+	if strings.Contains(subgroveID, ":") {
+		return NewValidationError(fmt.Sprintf("subgrove id %q holds ':', which a RevokeSubgroveKey's can't", subgroveID))
+	}
+	if err := validateWillowDID(revokeeDID, "revokee"); err != nil {
+		return err
+	}
+	return validateWillowDID(senderDID, "sender")
 }
 
 // grant adds a key grant's seven lines.

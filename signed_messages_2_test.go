@@ -916,3 +916,76 @@ func sha256Hex(b []byte) string {
 	digest := sha256.Sum256(b)
 	return hex.EncodeToString(digest[:])
 }
+
+// A grant or rotation whose grantee isn't a DID, and a revoke whose subgrove
+// id holds ':' or whose revokee or sender isn't a DID, are what the chain
+// refuses: the builders refuse them before signing, and the flows send
+// nothing.
+func TestKeyGrantsAndRevokesTheChainRefusesAreNotSigned(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("sent %s %s", r.Method, r.URL.Path)
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.SetIdentity(vectorIdentity(t, Ed25519))
+	ctx := context.Background()
+
+	good := EncryptedKeyGrant{
+		GranteeDID: "did:willow:b", GranteePublicKeyID: "did:willow:b#key-1",
+		EphemeralPublicKey: make([]byte, 32), EncryptedKey: []byte{1}, GrantedBy: "did:willow:a",
+	}
+	for name, did := range map[string]string{
+		"no prefix":      "b",
+		"another method": "did:key:b",
+		"empty body":     "did:willow:",
+		"colon":          "did:willow:b:c",
+		"space":          "did:willow:b c",
+		"non-ASCII":      "did:willow:bé",
+		"over 128 bytes": "did:willow:" + strings.Repeat("a", 118),
+	} {
+		bad := good
+		bad.GranteeDID = did
+		refused := func(what string, err error) {
+			if !IsValidationError(err) {
+				t.Errorf("%s, %s: %v; want a validation error", name, what, err)
+			}
+		}
+		_, err := FormatGrantSubgroveKeyMessage("sg", "did:willow:a", bad, 1)
+		refused("grant message", err)
+		_, err = FormatRotateSubgroveKeyMessage("sg", "did:willow:a", 1, []EncryptedKeyGrant{good, bad}, 1)
+		refused("rotation message", err)
+		_, err = client.Privacy.GrantSubgroveKey(ctx, "sg", bad)
+		refused("GrantSubgroveKey", err)
+		_, err = client.Privacy.RotateSubgroveKey(ctx, "sg", 1, []EncryptedKeyGrant{good, bad})
+		refused("RotateSubgroveKey", err)
+		_, err = client.Privacy.RevokeSubgroveKey(ctx, "sg", did)
+		refused("RevokeSubgroveKey revokee", err)
+		_, err = revokeSubgroveKeyMessage("sg", did, "did:willow:a", 1)
+		refused("revoke message revokee", err)
+		_, err = revokeSubgroveKeyMessage("sg", "did:willow:b", did, 1)
+		refused("revoke message sender", err)
+	}
+	for _, id := range []string{"s:g", ":", ""} {
+		if _, err := client.Privacy.RevokeSubgroveKey(ctx, id, "did:willow:b"); !IsValidationError(err) {
+			t.Errorf("RevokeSubgroveKey of subgrove %q: %v; want a validation error", id, err)
+		}
+	}
+
+	// DIDs at the rule's edges sign.
+	longest := good
+	longest.GranteeDID = "did:willow:" + strings.Repeat("Z", 117)
+	if _, err := FormatGrantSubgroveKeyMessage("sg", "did:willow:a", longest, 1); err != nil {
+		t.Errorf("a 128-byte grantee: %v", err)
+	}
+	if _, err := FormatRotateSubgroveKeyMessage("sg", "did:willow:a", 1, []EncryptedKeyGrant{good, longest}, 1); err != nil {
+		t.Errorf("a rotation to a 128-byte grantee: %v", err)
+	}
+	if msg, err := revokeSubgroveKeyMessage("sg-1", "did:willow:b_-9", "did:willow:a", 3); err != nil ||
+		msg != "RevokeSubgroveKey:sg-1:did:willow:b_-9:did:willow:a:3" {
+		t.Errorf("revoke message = %q, %v", msg, err)
+	}
+}

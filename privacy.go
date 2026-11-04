@@ -109,10 +109,14 @@ type grantSubgroveKeyRequest struct {
 // GrantSubgroveKey broadcasts a GrantSubgroveKey transaction, granting the
 // specified DID access to the subgrove's encryption key. It is signed over
 // FormatGrantSubgroveKeyMessage, which binds every field of the grant and the
-// transaction's nonce (see Client.NextNonce). It returns once CheckTx accepts
-// the transaction, with the nonce and transaction hash.
+// transaction's nonce (see Client.NextNonce). A grantee that isn't a DID is a
+// validation error, and nothing is sent. It returns once CheckTx accepts the
+// transaction, with the nonce and transaction hash.
 func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
+		return nil, err
+	}
+	if err := validateGrantees([]EncryptedKeyGrant{grant}); err != nil {
 		return nil, err
 	}
 
@@ -150,17 +154,25 @@ type revokeSubgroveKeyRequest struct {
 }
 
 // RevokeSubgroveKey broadcasts a RevokeSubgroveKey transaction, revoking
-// the specified DID's access to the subgrove's encryption key. It returns once
-// CheckTx accepts the transaction, with the nonce and transaction hash.
+// the specified DID's access to the subgrove's encryption key. It is signed
+// over "RevokeSubgroveKey:<subgroveID>:<revokeeDID>:<senderDID>:<nonce>". A
+// subgrove id holding ':', or a revokee that isn't a DID, is a validation
+// error, as the chain refuses it, and nothing is sent. It returns once CheckTx
+// accepts the transaction, with the nonce and transaction hash.
 func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
+	if err := validateRevoke(subgroveID, revokeeDID, identity.DID()); err != nil {
+		return nil, err
+	}
 	return p.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
-		message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
-			subgroveID, revokeeDID, identity.DID(), nonce)
+		message, err := revokeSubgroveKeyMessage(subgroveID, revokeeDID, identity.DID(), nonce)
+		if err != nil {
+			return nil, err
+		}
 		signature, err := identity.Sign([]byte(message))
 		if err != nil {
 			return nil, err
@@ -193,10 +205,14 @@ type rotateSubgroveKeyRequest struct {
 // subgrove encryption key to a new epoch and re-granting access to the
 // specified DIDs with newly encrypted keys. It is signed over
 // FormatRotateSubgroveKeyMessage, which binds every grant, their order and
-// count, and the transaction's nonce. It returns once CheckTx accepts the
+// count, and the transaction's nonce. A grant whose grantee isn't a DID is a
+// validation error, and nothing is sent. It returns once CheckTx accepts the
 // transaction, with the nonce and transaction hash.
 func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
+		return nil, err
+	}
+	if err := validateGrantees(newGrants); err != nil {
 		return nil, err
 	}
 
