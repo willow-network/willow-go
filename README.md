@@ -1,6 +1,6 @@
 # Willow Go SDK
 
-Official Go SDK for interacting with the Willow network - a decentralized data infrastructure protocol providing blockchain indexing and structured data storage with cryptographic proof verification.
+Official Go SDK for interacting with the Willow network - a decentralized data infrastructure protocol providing blockchain indexing and structured data storage. See [What the SDK verifies](#what-the-sdk-verifies) for what it checks itself.
 
 ## Installation
 
@@ -14,7 +14,7 @@ go get github.com/willow-network/willow-go
 - **Data Operations**: Store data as signed transactions, read it, query it, and fetch its proofs
 - **Subgrove Management**: Register and deregister subgroves as signed transactions
 - **Token Operations**: Query balances and fee schedules
-- **GraphQL Indexing**: Query indexed blockchain data
+- **GraphQL Indexing**: Query indexed blockchain data (answers unverified)
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Light Client**: Track a trusted CometBFT header (see Proofs and the light client)
@@ -116,9 +116,11 @@ write that depends on another only after the first has landed. A write
 refused in its block also uses its nonce (every kind the SDK sends except
 DeregisterSubgrove, whose refusal leaves the nonce unused): read what it
 wrote, or look its `TxHash` up with `consensus.Client.GetTx`, to know it took
-effect. `client.GetAccountNonce` reads the account's nonce state, and
-`client.NextNonce` hands out a nonce for a transaction the client doesn't
-build (a file write's `FileSigningOptions.Nonce`, or one sent with
+effect. A `*willow.WriteError` carries no `TxHash` (the API names none for a
+failed submission): read what the write wrote. `client.GetAccountNonce` reads
+the account's nonce state, and `client.NextNonce` hands out a nonce for a
+transaction the client doesn't build (a file write's
+`FileSigningOptions.Nonce`, or one sent with
 `consensus.Client.BroadcastTxSync`).
 
 Set `WithRPCURL` (the CometBFT RPC endpoint) when writes run concurrently.
@@ -166,8 +168,11 @@ or another `MayLand` error (also how the API reports CometBFT refusing a
 transaction identical to one it has already seen), means the earlier attempt
 may be pending: wait for the nonce. Sending the write again under a fresh
 nonce while the earlier attempt is valid can run it twice. For the same
-reason, a write refused as used under a nonce this client sent a write under
-before fails with `willow.ErrNonceUsed` rather than being signed again.
+reason, a write refused as used under a nonce this client sent the same write
+under before (the same transaction but for its nonce and signature) fails with
+`willow.ErrNonceUsed` rather than being signed again; a different write that
+used the nonce says nothing about this one, which is signed again under the
+next free nonce.
 
 ## Quick Start
 
@@ -414,7 +419,7 @@ result, err := consensusClient.BroadcastTxSync(ctx, map[string]interface{}{"Regi
 ### GraphQL Queries
 
 ```go
-// Execute a GraphQL query
+// Execute a GraphQL query; the answer is returned unverified
 response, err := client.Indexing.Execute(ctx, "uniswap-v3",
     `query GetSwaps($first: Int!) {
         swaps(first: $first, orderBy: timestamp, orderDirection: desc) {
@@ -431,10 +436,9 @@ response, err := client.Indexing.Execute(ctx, "uniswap-v3",
 // Using query builder
 query := willow.NewGraphQLQuery(`query { pools { id } }`).
     Variable("first", 100).
-    IncludeProof().
     Build()
 
-response, err := client.Indexing.Query(ctx, "uniswap-v3", query)
+response, err := client.Indexing.QueryUnverified(ctx, "uniswap-v3", query)
 
 // Execute and unmarshal directly
 var result struct {
@@ -446,6 +450,11 @@ var result struct {
 
 err := client.Indexing.ExecuteWithResult(ctx, "uniswap-v3", query, vars, &result)
 ```
+
+`Execute`, `ExecuteWithResult`, and `QueryUnverified` ask for no proof and
+return the answer as the API (or, with `WithIndexerURL`, the indexer) sends
+it. `Indexing.Query` returns an unsupported error and sends nothing, because
+the SDK can't verify a GraphQL answer (see What the SDK verifies).
 
 ### Proofs and the light client
 
@@ -478,6 +487,36 @@ err = lc.InitializeWithTrustedHeader(trustedBlock)
 header, err := lc.GetLatestTrustedHeader()
 fmt.Println(header.Height, header.AppHash)
 ```
+
+`lc.GetLatestAppHash` returns that header's app hash (`GetVerifiedRootHash`
+is a deprecated alias): it is as trustworthy as the header pinned, or the
+endpoints the light client took it from, not verified against the validators.
+
+### What the SDK verifies
+
+- Nothing read from the chain's state is verified: the SDK verifies no
+  CometBFT header (`VerifyHeader` doesn't check commit signatures) and has no
+  GroveDB verifier that binds data to the chain's root. So `Data.Query`,
+  `Data.VerifyProof`, `Data.QueryHistoricalVerified` (deprecated), and
+  `Indexing.Query` return an unsupported error and send nothing, and every
+  other read (`Data.Get`, `Data.QueryUnverified`, `Data.GetProof`,
+  `Data.QueryHistorical`, GraphQL and SQL queries, `GetLatestAppHash`)
+  returns what it is sent, unverified.
+- Block completeness: `VerifyBlockCompleteness` re-hashes an indexer's
+  matched logs and compares them with the block's events commitment. It
+  doesn't trust the indexer, but it trusts the RPC node it reads the
+  commitment from: that ABCI answer carries no proof. An answer for another
+  subgrove or block than the one asked for is an error.
+- Ethereum state reads (`EthOperations`): the indexer's answer carries the
+  block's state root and MPT proofs of the account and slot values under it.
+  The SDK requires the proof to be for the address, block, and slots asked
+  for (in order), and in `EthWalkProofs` mode (the default) walks it, but it
+  has no trusted source of Ethereum block headers, so it can't check that the
+  root is Ethereum's: every result is the indexer's claim. An `eth_call`'s
+  result is bound by no proof.
+- File downloads: `Files.Download` checks the chunks against the manifest's
+  chunk Merkle root and content hash, with the manifest as the API sends it,
+  unverified.
 
 ### Consensus Client
 
