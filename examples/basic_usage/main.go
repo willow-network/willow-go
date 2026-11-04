@@ -4,7 +4,7 @@
 // - Creating a client
 // - Generating and registering a DID
 // - Setting identity for per-request signing
-// - Storing and retrieving data with automatic proof verification
+// - Storing data and reading it back (unverified)
 //
 // Run with: go run ./examples/basic_usage
 
@@ -93,8 +93,8 @@ func main() {
 		fmt.Printf("   %s\n", dataJSON)
 	}
 
-	// 7. Retrieve data without verification (faster)
-	fmt.Println("\n7. Retrieving data (without verification)...")
+	// 7. Retrieve data asking for no proof
+	fmt.Println("\n7. Retrieving data (asking for no proof)...")
 	response, err = client.Data.GetUnverified(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)

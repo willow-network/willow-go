@@ -133,8 +133,8 @@ func main() {
 		fmt.Printf("   %s\n", dataJSON)
 	}
 
-	// 4. Get without verification (faster)
-	fmt.Println("\n4. Get without verification (unverified)...")
+	// 4. Get asking for no proof
+	fmt.Println("\n4. GetUnverified (asking for no proof)...")
 	response, err = client.Data.GetUnverified(ctx, subgroveID, "product-2")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)

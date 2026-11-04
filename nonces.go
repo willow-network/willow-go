@@ -517,8 +517,10 @@ func (c *Client) NextNonce(ctx context.Context, did string) (uint64, error) {
 // order. A write refused in its block also uses its nonce (every kind the
 // SDK sends except DeregisterSubgrove, whose refusal leaves it unused): read
 // what it wrote, or look the TxHash of its WriteResult up
-// (consensus.Client.GetTx), to know it took effect. A *WriteError carries no
-// TxHash: the API's answer to a failed submission names none.
+// (consensus.Client.GetTx), to know it took effect. For a write whose
+// *WriteError has MayLand set, read what it wrote: the API names no
+// transaction hash for a submission that may have landed. (A CheckTx
+// refusal's hash is on the *TransactionError the WriteError wraps.)
 //
 // Set an RPC URL (WithRPCURL) when writes run concurrently. Without one only
 // the base is known, and the base advances only over used nonces with no gap

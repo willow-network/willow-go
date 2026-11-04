@@ -122,11 +122,12 @@ write that depends on another only after the first has landed. A write
 refused in its block also uses its nonce (every kind the SDK sends except
 DeregisterSubgrove, whose refusal leaves the nonce unused): read what it
 wrote, or look its `TxHash` up with `consensus.Client.GetTx`, to know it took
-effect. A `*willow.WriteError` carries no `TxHash` (the API names none for a
-failed submission): read what the write wrote. `client.GetAccountNonce` reads
-the account's nonce state, and `client.NextNonce` hands out a nonce for a
-transaction the client doesn't build (a file write's
-`FileSigningOptions.Nonce`, or one sent with
+effect. For a `*willow.WriteError` with `MayLand` set, read what the write
+wrote: the API names no transaction hash for a submission that may have
+landed. (A CheckTx refusal's hash is on the `*willow.TransactionError` the
+`WriteError` wraps.) `client.GetAccountNonce` reads the account's nonce
+state, and `client.NextNonce` hands out a nonce for a transaction the client
+doesn't build (a file write's `FileSigningOptions.Nonce`, or one sent with
 `consensus.Client.BroadcastTxSync`).
 
 Set `WithRPCURL` (the CometBFT RPC endpoint) when writes run concurrently.

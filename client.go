@@ -156,7 +156,10 @@ func WithRPCURL(rpcURL string) ClientOption {
 	}
 }
 
-// WithLightClient enables light client verification.
+// WithLightClient sets the light client LightClient and GetOrCreateLightClient
+// return. It tracks CometBFT headers without verifying their commit
+// signatures (see the lightclient package), and no read is verified against
+// it.
 func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	return func(c *Client) error {
 		c.lightClient = lc
@@ -312,8 +315,9 @@ func (c *Client) RequireAuth() error {
 
 // RegisterComputedFields registers computed fields for a dataset.
 //
-// Computed fields are derived values calculated from proven data,
-// enabling drop-in compatibility with The Graph's query interfaces.
+// Computed fields are derived values calculated from the values a query
+// returns, which are unverified, enabling drop-in compatibility with The
+// Graph's query interfaces.
 //
 // Example:
 //

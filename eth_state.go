@@ -46,7 +46,9 @@ const (
 	StateVerifyModeStrict = EthWalkProofs
 	// Deprecated: use EthSkipProofs; no root is anchored to anything trusted.
 	StateVerifyModeAnchorOnly = EthSkipProofs
-	// Deprecated: use EthSkipProofs.
+	// Deprecated: use EthSkipProofs, which it acts as: no proof is walked. It
+	// keeps its own value, 2, so a switch over the three older modes still
+	// compiles.
 	StateVerifyModeDisabled EthProofMode = 2
 )
 
