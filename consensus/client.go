@@ -3,10 +3,13 @@ package consensus
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -126,14 +129,25 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 // BroadcastTxSync + GetTx polling, not speak JSON-RPC directly to
 // CometBFT (the validator no longer accepts JSON on the wire).
 
-// GetTx retrieves a transaction by hash.
+// GetTx looks a transaction up by its hash: the hex TxHash /tx/submit returns
+// (either case, with or without a 0x prefix). CometBFT's JSON-RPC reads the
+// tx method's hash as base64 of its 32 bytes, so GetTx sends it that way. A
+// transaction the node hasn't indexed (not in a block yet, or never) is a
+// TxResult with Status TransactionStatusNotFound; one in a block has its
+// Height and its block result's Code and Log (Code 0 is applied; a refusal's
+// Log ends "(nonce N spent)" when the refusal used its nonce).
 func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
+	raw, err := txHashBytes(hash)
+	if err != nil {
+		return nil, err
+	}
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tx",
 		"params": map[string]interface{}{
-			"hash": hash,
+			"hash":  base64.StdEncoding.EncodeToString(raw),
+			"prove": false,
 		},
 	}
 
@@ -143,24 +157,26 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	}
 
 	if resp.Error != nil {
-		if resp.Error.Code == -32603 { // Transaction not found
+		// CometBFT answers an unknown hash with an internal error whose data
+		// says "tx (<HASH>) not found" or "tx not found: <HASH>".
+		if resp.Error.Code == -32603 && strings.Contains(resp.Error.Data, "not found") {
 			return &TxResult{
 				Hash:   hash,
 				Status: TransactionStatusNotFound,
 			}, nil
 		}
-		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
+		return nil, fmt.Errorf("RPC error: %s %s", resp.Error.Message, resp.Error.Data)
 	}
 
 	var txResp struct {
-		Hash     string `json:"hash"`
-		Height   string `json:"height"`
-		Index    uint32 `json:"index"`
+		Hash     string    `json:"hash"`
+		Height   jsonInt64 `json:"height"`
+		Index    uint32    `json:"index"`
 		TxResult struct {
 			Code    uint32          `json:"code"`
 			Log     string          `json:"log"`
-			GasUsed string          `json:"gas_used"`
-			GasWant string          `json:"gas_wanted"`
+			GasUsed jsonInt64       `json:"gas_used"`
+			GasWant jsonInt64       `json:"gas_wanted"`
 			Data    json.RawMessage `json:"data"`
 		} `json:"tx_result"`
 	}
@@ -170,11 +186,14 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	}
 
 	result := &TxResult{
-		Hash:  txResp.Hash,
-		Index: txResp.Index,
-		Code:  txResp.TxResult.Code,
-		Log:   txResp.TxResult.Log,
-		Data:  txResp.TxResult.Data,
+		Hash:    txResp.Hash,
+		Height:  int64(txResp.Height),
+		Index:   txResp.Index,
+		Code:    txResp.TxResult.Code,
+		Log:     txResp.TxResult.Log,
+		GasUsed: int64(txResp.TxResult.GasUsed),
+		GasWant: int64(txResp.TxResult.GasWant),
+		Data:    txResp.TxResult.Data,
 	}
 
 	if txResp.TxResult.Code == 0 {
@@ -184,6 +203,40 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	}
 
 	return result, nil
+}
+
+// txHashBytes reads a transaction hash given as hex (either case, with or
+// without a 0x prefix): CometBFT's, a SHA-256 of 32 bytes.
+func txHashBytes(hash string) ([]byte, error) {
+	bare := strings.TrimPrefix(strings.TrimPrefix(hash, "0x"), "0X")
+	raw, err := hex.DecodeString(bare)
+	if err != nil {
+		return nil, fmt.Errorf("transaction hash %q is not hex: %w", hash, err)
+	}
+	if len(raw) != 32 {
+		return nil, fmt.Errorf("transaction hash %q is %d bytes, not 32", hash, len(raw))
+	}
+	return raw, nil
+}
+
+// jsonInt64 reads an int64 CometBFT writes as a decimal string (or a number).
+type jsonInt64 int64
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (n *jsonInt64) UnmarshalJSON(data []byte) error {
+	text := string(data)
+	if text == "null" {
+		return nil
+	}
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		text = unquoted
+	}
+	v, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("not an integer: %s", data)
+	}
+	*n = jsonInt64(v)
+	return nil
 }
 
 // GetStatus retrieves the node status.

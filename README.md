@@ -453,7 +453,9 @@ result, err := consensusClient.BroadcastTxSync(ctx, map[string]interface{}{
     "Transfer": tx,
 })
 
-// Query transaction
+// Look a transaction up by its hash once it is in a block (the hex hash is
+// sent to CometBFT as base64 of its bytes): Status is not_found until then,
+// and Code and Log are its block's result.
 txResult, err := consensusClient.GetTx(ctx, result.TxHash)
 ```
 
