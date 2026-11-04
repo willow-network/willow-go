@@ -8,14 +8,19 @@ import (
 )
 
 // The messages data and file writes are signed over. Each is a set of lines
-// joined by "\n" (no trailing newline): the kind first, then one
-// "Label: value" line per field the transaction writes, the nonce last.
-// Numbers are unsigned decimal and bytes lowercase hex without 0x. The nonce
-// is the nonce the transaction carries, so build the message after choosing
-// it; a retry under another nonce needs a new signature.
+// joined by "\n" (the byte 0x0A, no trailing newline), UTF-8: the kind first,
+// then one "Label: value" line per field the transaction writes, the nonce
+// last. Text fields go in verbatim. Numbers are unsigned decimal and bytes
+// lowercase hex without 0x.
 //
-// A text field can't hold a line break: the chain refuses such a transaction,
-// and these builders return a validation error instead of a message.
+// The nonce is the nonce the transaction carries, so build the message after
+// choosing it; a retry under another nonce needs a new signature. A write the
+// chain refuses in its block after its signature and nonce verify still spends
+// that nonce, so retry it signed under the next free nonce.
+//
+// A text field can't hold the byte 0x0A: the chain refuses such a
+// transaction, and these builders return a validation error instead of a
+// message.
 
 // FormatDataStoreMessage returns the message a StoreData transaction is signed
 // over:
@@ -129,7 +134,8 @@ func newSignedMessage(kind string) *signedMessage {
 	return &signedMessage{lines: []string{kind}}
 }
 
-// text adds a text field, refusing one that holds a line break.
+// text adds a text field, refusing one that holds a line break (the byte
+// 0x0A, which is also the second byte of "\r\n").
 func (m *signedMessage) text(label, value string) *signedMessage {
 	if m.err == nil && strings.ContainsRune(value, '\n') {
 		m.err = NewValidationError(label + " holds a line break, which a signed field can't")

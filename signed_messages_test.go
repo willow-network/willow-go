@@ -107,7 +107,7 @@ func TestSignedMessagesAreTheChainsKnownAnswers(t *testing.T) {
 		var got string
 		var err error
 		switch v.Name {
-		case "StoreData":
+		case "StoreData", "StoreData (non-ASCII, large nonce)":
 			got, err = FormatDataStoreMessage(in.SubgroveID, in.Key, in.OwnerDID, []byte(in.DataUTF8), in.Nonce)
 		case "StoreFileManifest", "StoreFileManifest (encrypted)":
 			fields := FileManifestFields{
@@ -172,8 +172,8 @@ func TestSignedMessagesAreTheChainsKnownAnswers(t *testing.T) {
 		}
 		checked++
 	}
-	if checked != 4 {
-		t.Fatalf("checked %d vectors, want 4 (StoreData, StoreFileManifest twice, DeleteFileManifest)", checked)
+	if checked != 5 {
+		t.Fatalf("checked %d vectors, want 5 (StoreData and StoreFileManifest twice each, DeleteFileManifest)", checked)
 	}
 }
 
@@ -190,6 +190,7 @@ func TestSignedMessagesRefuseLineBreaks(t *testing.T) {
 		"StoreData Subgrove":            func() (string, error) { return FormatDataStoreMessage("s\ng", "k", "did:willow:a", nil, 1) },
 		"StoreData Key":                 func() (string, error) { return FormatDataStoreMessage("sg", "k\n", "did:willow:a", nil, 1) },
 		"StoreData Owner":               func() (string, error) { return FormatDataStoreMessage("sg", "k", "did:willow:a\n", nil, 1) },
+		"StoreData Key CRLF":            func() (string, error) { return FormatDataStoreMessage("sg", "a\r\nb", "did:willow:a", nil, 1) },
 		"StoreFileManifest Subgrove":    file(func(f *FileManifestFields) { f.SubgroveID = "s\ng" }),
 		"StoreFileManifest Key":         file(func(f *FileManifestFields) { f.FileKey = "\nk" }),
 		"StoreFileManifest Owner":       file(func(f *FileManifestFields) { f.OwnerDID = "did:willow:a\n" }),
@@ -209,6 +210,10 @@ func TestSignedMessagesRefuseLineBreaks(t *testing.T) {
 		if msg, err := build(); err == nil || !IsValidationError(err) || msg != "" {
 			t.Errorf("%s: got %q, %v; want a validation error", name, msg, err)
 		}
+	}
+	// Only the byte 0x0A is refused: a lone carriage return goes in verbatim.
+	if msg, err := FormatDataStoreMessage("sg", "a\rb", "did:willow:a", nil, 1); err != nil || !strings.Contains(msg, "\nKey: a\rb\n") {
+		t.Errorf("key with a carriage return: got %q, %v", msg, err)
 	}
 	// Data may hold line breaks: only its hash is in the message.
 	if _, err := FormatDataStoreMessage("sg", "k", "did:willow:a", []byte("{\n}"), 1); err != nil {

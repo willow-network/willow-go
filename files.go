@@ -26,8 +26,9 @@ type FileSigningOptions struct {
 	PublicKeyID string
 	SignFunc    func(message []byte) (string, error) // returns hex-encoded signature
 	// Nonce is the transaction's nonce, one past the owner's account nonce.
-	// The signed message binds it, so a retry under another nonce is signed
-	// anew.
+	// The signed message binds it. A write the chain refuses in its block
+	// after its signature and nonce verify still spends the nonce, so a retry
+	// takes the next free nonce and is signed anew.
 	Nonce uint64
 }
 
