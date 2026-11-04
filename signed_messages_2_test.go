@@ -331,11 +331,15 @@ func TestSecondSetMessagesRefuseLineBreaksAndInvalidUTF8(t *testing.T) {
 		"GrantSubgroveKey GrantedBy": func() (string, error) {
 			return FormatGrantSubgroveKeyMessage("p1", "did:willow:a", withGrant(func(g *EncryptedKeyGrant) { g.GrantedBy += "\nNonce: 2" }), 1)
 		},
-		"RotateSubgroveKey Subgrove": func() (string, error) { return FormatRotateSubgroveKeyMessage("p\n1", "did:willow:a", 1, nil, 1) },
-		"RotateSubgroveKey Sender":   func() (string, error) { return FormatRotateSubgroveKeyMessage("p1", "\n", 1, nil, 1) },
+		"RotateSubgroveKey Subgrove": func() (string, error) {
+			return FormatRotateSubgroveKeyMessage("p\n1", "did:willow:a", 0, []EncryptedKeyGrant{grant}, 1)
+		},
+		"RotateSubgroveKey Sender": func() (string, error) {
+			return FormatRotateSubgroveKeyMessage("p1", "\n", 0, []EncryptedKeyGrant{grant}, 1)
+		},
 		"RotateSubgroveKey second grant": func() (string, error) {
-			return FormatRotateSubgroveKeyMessage("p1", "did:willow:a", 1,
-				[]EncryptedKeyGrant{grant, withGrant(func(g *EncryptedKeyGrant) { g.GranteeDID += "\n" })}, 1)
+			return FormatRotateSubgroveKeyMessage("p1", "did:willow:a", 0,
+				[]EncryptedKeyGrant{grant, withGrant(func(g *EncryptedKeyGrant) { g.GranteePublicKeyID += "\n" })}, 1)
 		},
 		"UnregisterStorageNode Node": func() (string, error) { return FormatUnregisterStorageNodeMessage("did:willow:s\n", 1) },
 		// Not valid UTF-8: the JSON sent would carry U+FFFD instead.
@@ -772,17 +776,6 @@ func TestRotateSubgroveKeySignsTheTransactionItSends(t *testing.T) {
 			}
 		})
 	}
-	// A rotation with no grants sends an empty list, which the chain decodes.
-	srv, txs := txServer(t, 1)
-	client, _ := clientFor(t, srv, Ed25519)
-	if _, err := client.Privacy.RotateSubgroveKey(context.Background(), "p1", 2, nil); err != nil {
-		t.Fatal(err)
-	}
-	var fields map[string]json.RawMessage
-	decodeExactly(t, sentTx(t, txs, "RotateSubgroveKey"), &fields)
-	if string(fields["new_grants"]) != "[]" {
-		t.Fatalf("new_grants = %s, want []", fields["new_grants"])
-	}
 }
 
 func TestUnregisterStorageNodeSignsTheTransactionItSends(t *testing.T) {
@@ -917,9 +910,10 @@ func sha256Hex(b []byte) string {
 	return hex.EncodeToString(digest[:])
 }
 
-// A grant or rotation whose grantee isn't a DID, and a revoke whose subgrove
-// id holds ':' or whose revokee or sender isn't a DID, are what the chain
-// refuses: the builders refuse them before signing, and the flows send
+// A grant or rotation whose grantee isn't a DID, a rotation with no grants or
+// with a grant at another key epoch than its new one, and a revoke whose
+// subgrove id holds ':' or whose revokee or sender isn't a DID, are what the
+// chain refuses: the builders refuse them before signing, and the flows send
 // nothing.
 func TestKeyGrantsAndRevokesTheChainRefusesAreNotSigned(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -935,8 +929,30 @@ func TestKeyGrantsAndRevokesTheChainRefusesAreNotSigned(t *testing.T) {
 	ctx := context.Background()
 
 	good := EncryptedKeyGrant{
-		GranteeDID: "did:willow:b", GranteePublicKeyID: "did:willow:b#key-1",
+		GranteeDID: "did:willow:b", KeyEpoch: 1, GranteePublicKeyID: "did:willow:b#key-1",
 		EphemeralPublicKey: make([]byte, 32), EncryptedKey: []byte{1}, GrantedBy: "did:willow:a",
+	}
+	if _, err := FormatRotateSubgroveKeyMessage("sg", "did:willow:a", 1, []EncryptedKeyGrant{good}, 1); err != nil {
+		t.Fatalf("a rotation to epoch 1 with a grant at epoch 1: %v", err)
+	}
+	stale := good
+	stale.KeyEpoch = 0
+	for name, rotation := range map[string]struct {
+		epoch  uint32
+		grants []EncryptedKeyGrant
+	}{
+		"no grants":                    {1, nil},
+		"an empty list":                {1, []EncryptedKeyGrant{}},
+		"a grant at the old epoch":     {1, []EncryptedKeyGrant{good, stale}},
+		"a grant at a later epoch":     {0, []EncryptedKeyGrant{stale, good}},
+		"every grant at another epoch": {2, []EncryptedKeyGrant{good}},
+	} {
+		if msg, err := FormatRotateSubgroveKeyMessage("sg", "did:willow:a", rotation.epoch, rotation.grants, 1); !IsValidationError(err) || msg != "" {
+			t.Errorf("rotation message, %s: %q, %v; want a validation error", name, msg, err)
+		}
+		if _, err := client.Privacy.RotateSubgroveKey(ctx, "sg", rotation.epoch, rotation.grants); !IsValidationError(err) {
+			t.Errorf("RotateSubgroveKey, %s: %v; want a validation error", name, err)
+		}
 	}
 	for name, did := range map[string]string{
 		"no prefix":      "b",

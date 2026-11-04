@@ -440,10 +440,10 @@ func FormatGrantSubgroveKeyMessage(subgroveID, senderDID string, grant Encrypted
 //	FormatGrantSubgroveKeyMessage>
 //	Nonce: <nonce>
 //
-// It refuses a rotation with a grant whose grantee isn't a DID, which the
-// chain refuses.
+// It refuses what the chain refuses: a rotation with no grants, a grant whose
+// KeyEpoch isn't newEpoch, or a grant whose grantee isn't a DID.
 func FormatRotateSubgroveKeyMessage(subgroveID, senderDID string, newEpoch uint32, grants []EncryptedKeyGrant, nonce uint64) (string, error) {
-	if err := validateGrantees(grants); err != nil {
+	if err := validateRotation(newEpoch, grants); err != nil {
 		return "", err
 	}
 	m := newSignedMessage("RotateSubgroveKey").
@@ -468,6 +468,22 @@ func FormatUnregisterStorageNodeMessage(nodeDID string, nonce uint64) (string, e
 		text("Node", nodeDID).
 		line("Nonce", strconv.FormatUint(nonce, 10)).
 		build()
+}
+
+// validateRotation applies the chain's rules for a RotateSubgroveKey's
+// grants: at least one (CheckTx refuses none), each at key epoch newEpoch
+// (the block refuses another epoch, and the refusal uses the nonce), and each
+// to a DID.
+func validateRotation(newEpoch uint32, grants []EncryptedKeyGrant) error {
+	if len(grants) == 0 {
+		return NewValidationError("a RotateSubgroveKey needs at least one grant")
+	}
+	for i, g := range grants {
+		if g.KeyEpoch != newEpoch {
+			return NewValidationError(fmt.Sprintf("grant %d is for key epoch %d, not the rotation's new epoch %d", i, g.KeyEpoch, newEpoch))
+		}
+	}
+	return validateGrantees(grants)
 }
 
 // validateGrantees refuses grants whose grantee isn't a DID, which the chain

@@ -90,6 +90,12 @@ types don't encode, and one the chain would refuse for its subgrove id, its
 admins, writers, or free readers, its schema, or a private registration's
 initial owner key grant (see Subgrove Management).
 
+The key-grant builders and flows refuse what the chain refuses: a grant or
+rotation to a grantee that isn't a DID, a rotation with no grants, and a
+rotation with a grant whose `KeyEpoch` isn't the rotation's new epoch (the
+block refuses that one after CheckTx admits it, and the refusal spends the
+nonce).
+
 Ed25519 signs the message's UTF-8 bytes. secp256k1 signs their Keccak-256
 (low-S; the SDK sends DER, and the chain also accepts 64-byte compact r||s).
 

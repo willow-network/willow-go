@@ -205,22 +205,19 @@ type rotateSubgroveKeyRequest struct {
 // subgrove encryption key to a new epoch and re-granting access to the
 // specified DIDs with newly encrypted keys. It is signed over
 // FormatRotateSubgroveKeyMessage, which binds every grant, their order and
-// count, and the transaction's nonce. A grant whose grantee isn't a DID is a
-// validation error, and nothing is sent. It returns once CheckTx accepts the
+// count, and the transaction's nonce. No grants, a grant whose KeyEpoch isn't
+// newEpoch, or a grant whose grantee isn't a DID is a validation error, as the
+// chain refuses it, and nothing is sent. It returns once CheckTx accepts the
 // transaction, with the nonce and transaction hash.
 func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
-	if err := validateGrantees(newGrants); err != nil {
+	if err := validateRotation(newEpoch, newGrants); err != nil {
 		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-	if newGrants == nil {
-		// Sent as an empty list: the chain reads new_grants as a list.
-		newGrants = []EncryptedKeyGrant{}
-	}
 	return p.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		message, err := FormatRotateSubgroveKeyMessage(subgroveID, identity.DID(), newEpoch, newGrants, nonce)
 		if err != nil {

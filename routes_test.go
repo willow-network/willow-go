@@ -123,7 +123,9 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 	if err := client.Files.Delete("sg", "f", signing); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.Privacy.RotateSubgroveKey(ctx, "sg", 2, nil); err != nil {
+	if _, err := client.Privacy.RotateSubgroveKey(ctx, "sg", 2, []EncryptedKeyGrant{{
+		GranteeDID: "did:willow:b", KeyEpoch: 2, EphemeralPublicKey: make([]byte, 32), EncryptedKey: []byte{3},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Files.UnregisterStorageNode("did:willow:n", signing); err != nil {
