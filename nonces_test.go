@@ -388,7 +388,7 @@ func TestHandedOutNoncesLapse(t *testing.T) {
 		t.Fatalf("after nonce 1's hold: %d, want 1 again", n)
 	}
 	// Nonce 1 is held from now; settling 2 as accepted restarts its hold too.
-	a.settle("did:willow:a", 2, nonceAccepted)
+	a.settle("did:willow:a", 2, nonceAccepted, [32]byte{})
 	clock.advance(NonceHold - time.Second)
 	if n := take(); n != 3 {
 		t.Fatalf("with 1 and 2 held: %d, want 3", n)
@@ -572,7 +572,7 @@ func TestInFlightNoncesDontLapse(t *testing.T) {
 	if n := take(); n != 2 {
 		t.Fatalf("with 1 in flight: %d, want 2", n)
 	}
-	a.settle(did, 1, nonceAccepted)
+	a.settle(did, 1, nonceAccepted, [32]byte{})
 	clock.advance(NonceHold - time.Second)
 	if n := take(); n != 3 {
 		t.Fatalf("with 1 held and 2 in flight: %d, want 3", n)
@@ -620,9 +620,9 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("take = %d, %v", n, err)
 	}
-	a.begin(did, 1)                 // a second submission under 1
-	a.settle(did, 1, nonceAccepted) // the second is accepted
-	a.settle(did, 1, nonceFree)     // the first is refused before CheckTx
+	a.begin(did, 1)                             // a second submission under 1
+	a.settle(did, 1, nonceAccepted, [32]byte{}) // the second is accepted
+	a.settle(did, 1, nonceFree, [32]byte{})     // the first is refused before CheckTx
 	if n, _ := a.take(did, AccountNonceState{}); n != 2 {
 		t.Fatalf("after one submission under 1 was accepted: took %d, want 2", n)
 	}
@@ -632,7 +632,7 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 		t.Fatalf("reserve = %d", n)
 	}
 	b.begin(did, 1)
-	b.settle(did, 1, nonceFree)
+	b.settle(did, 1, nonceFree, [32]byte{})
 	if n, _ := b.take(did, AccountNonceState{}); n != 1 {
 		t.Fatalf("after the reserved nonce's only submission was refused: took %d, want 1 back", n)
 	}
@@ -695,10 +695,11 @@ func TestWithNonceSendsAWriteAgainUnderItsNonce(t *testing.T) {
 	}
 }
 
-// A refusal as used of a nonce this client sent a write under before (its
-// hold lapsed, and the chain didn't show it used) may be that write landing,
-// perhaps an earlier attempt of this one: the write fails with ErrNonceUsed
-// rather than being signed again under another nonce.
+// A refusal as used of a nonce this client sent the same write under before
+// (its hold lapsed, and the chain didn't show it used) may be that write
+// landing: the write fails with ErrNonceUsed rather than being signed again
+// under another nonce. A different write that used the nonce says nothing
+// about this one, which is signed again under the next free nonce.
 func TestUsedNonceThisClientSentIsNotSignedAgain(t *testing.T) {
 	s := newNonceServer(t, 0)
 	clock := newFakeClock()
@@ -707,16 +708,73 @@ func TestUsedNonceThisClientSentIsNotSignedAgain(t *testing.T) {
 		t.Fatalf("%+v, %v", write, err)
 	}
 	clock.advance(NonceHold)
+
+	// Another write takes 1 and is refused as used: "a" may have used it, so
+	// "b" is signed again under 2.
+	s.queue(refuse("Invalid nonce: %d already used (replay)"))
+	if write, err := store(t, client, "b"); err != nil || write.Nonce != 2 {
+		t.Fatalf("another write refused under a used nonce: %+v, %v, want it signed again under 2", write, err)
+	}
+	clock.advance(NonceHold)
+
+	// "b" again takes 2 (1 is seen used) and is refused as used: the "b"
+	// accepted under 2 may be what used it, so it fails with ErrNonceUsed.
 	s.queue(refuse("Invalid nonce: %d already used (replay)"))
 	_, err := store(t, client, "b")
 	var werr *WriteError
-	if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 1 {
-		t.Fatalf("refused as used: %v, want ErrNonceUsed for nonce 1", err)
+	if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 2 {
+		t.Fatalf("the same write refused as used: %v, want ErrNonceUsed for nonce 2", err)
 	}
-	if write, err := store(t, client, "b"); err != nil || write.Nonce != 2 {
-		t.Fatalf("next: %+v, %v, want nonce 2", write, err)
+	if write, err := store(t, client, "c"); err != nil || write.Nonce != 3 {
+		t.Fatalf("next: %+v, %v, want nonce 3", write, err)
 	}
-	if got := s.sent(); fmt.Sprint(got) != "[1 1 2]" {
-		t.Fatalf("sent nonces %v, want [1 1 2]", got)
+	if got := s.sent(); fmt.Sprint(got) != "[1 1 2 2 3]" {
+		t.Fatalf("sent nonces %v, want [1 1 2 2 3]", got)
+	}
+}
+
+// A write's digest leaves out its nonce and signature, so the same write
+// signed under two nonces shares it, and another write doesn't.
+func TestWriteDigestIdentifiesTheWriteApartFromItsNonce(t *testing.T) {
+	under := func(key string, nonce uint64, signature byte) []byte {
+		body, err := json.Marshal(map[string]interface{}{"StoreData": map[string]interface{}{
+			"subgrove_id": "sg", "key": key, "data": []byte(`{"k":1}`), "owner_did": "did:willow:a",
+			"signature": []byte{signature}, "public_key_id": "did:willow:a#key-1", "nonce": nonce,
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	if writeDigest(under("k", 1, 1)) != writeDigest(under("k", 2, 2)) {
+		t.Error("the same write under two nonces has two digests")
+	}
+	if writeDigest(under("k", 1, 1)) == writeDigest(under("j", 1, 1)) {
+		t.Error("two writes share a digest")
+	}
+	file, _ := json.Marshal(map[string]interface{}{"DeleteFileManifest": map[string]interface{}{"key": "k", "nonce": 1}})
+	if writeDigest(file) == writeDigest(under("k", 1, 1)) {
+		t.Error("two kinds share a digest")
+	}
+
+	// Through the allocator: only the same write's earlier submission counts.
+	const did = "did:willow:a"
+	a := newNonceAllocator(newFakeClock().now)
+	same, other := writeDigest(under("k", 1, 1)), writeDigest(under("j", 1, 1))
+	a.begin(did, 1)
+	if a.settle(did, 1, nonceAccepted, same) {
+		t.Fatal("nothing was sent under 1 before")
+	}
+	a.begin(did, 1)
+	if a.settle(did, 1, nonceUnknown, other) {
+		t.Fatal("another write's submission counted as this one's")
+	}
+	a.begin(did, 1)
+	if !a.settle(did, 1, nonceFree, same) {
+		t.Fatal("the same write's accepted submission under 1 wasn't counted")
+	}
+	a.begin(did, 1)
+	if !a.settle(did, 1, nonceFree, other) {
+		t.Fatal("the other write's submission that may have landed under 1 wasn't counted")
 	}
 }

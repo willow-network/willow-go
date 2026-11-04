@@ -3,6 +3,7 @@ package willow
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -50,9 +51,8 @@ var ErrNonceWindowFull = errors.New("nonce window full")
 // wasn't signed again, because its nonce is used and the transaction that used
 // it may be an earlier attempt of the same write (errors.Is(err,
 // ErrNonceUsed)). If it is, that attempt landed and was applied or refused in
-// its block: read what the write wrote (or look the earlier attempt's TxHash up
-// with consensus.Client.GetTx) before sending it again, without WithNonce,
-// under a fresh nonce.
+// its block: read what the write wrote before sending it again, without
+// WithNonce, under a fresh nonce.
 var ErrNonceUsed = errors.New("nonce already used")
 
 // AccountNonceState is an account's nonce state as the chain reports it.
@@ -213,10 +213,11 @@ type nonceAccount struct {
 	// claims holds each nonce handed out, and not seen used, that something
 	// still holds.
 	claims map[uint64]*nonceClaim
-	// sent holds the nonces above base, not seen used, under which a
-	// submission from this client was accepted or may have reached the node.
-	// A later refusal of such a nonce as used may be that submission landing.
-	sent map[uint64]bool
+	// sent holds, for each nonce above base not seen used, the writes (by
+	// writeDigest) submitted from this client under it that were accepted or
+	// may have reached the node. A later refusal of the nonce as used may be
+	// one of them landing.
+	sent map[uint64]map[[32]byte]bool
 }
 
 // nonceAllocator hands out transaction nonces so that no two writes in flight
@@ -235,7 +236,7 @@ func newNonceAllocator(now func() time.Time) *nonceAllocator {
 func (a *nonceAllocator) account(did string) *nonceAccount {
 	acct := a.accounts[did]
 	if acct == nil {
-		acct = &nonceAccount{used: map[uint64]bool{}, claims: map[uint64]*nonceClaim{}, sent: map[uint64]bool{}}
+		acct = &nonceAccount{used: map[uint64]bool{}, claims: map[uint64]*nonceClaim{}, sent: map[uint64]map[[32]byte]bool{}}
 		a.accounts[did] = acct
 	}
 	return acct
@@ -357,18 +358,18 @@ func (a *nonceAllocator) begin(did string, nonce uint64) {
 	claim.reserved = time.Time{}
 }
 
-// settle records what one submission signed by did under nonce (started by
-// take or begin) left the nonce as. It removes only that submission's own
-// in-flight count, so it never frees a hold another submission left.
-// Accepted, unknown, and held nonces are held for NonceHold from now, as the
-// node's hold runs from admission. It reports whether, before this
-// submission, a submission from this client under the nonce was accepted or
-// may have reached the node.
-func (a *nonceAllocator) settle(did string, nonce uint64, outcome nonceOutcome) (sentBefore bool) {
+// settle records what one submission of the write digest (see writeDigest)
+// signed by did under nonce (started by take or begin) left the nonce as. It
+// removes only that submission's own in-flight count, so it never frees a hold
+// another submission left. Accepted, unknown, and held nonces are held for
+// NonceHold from now, as the node's hold runs from admission. It reports
+// whether, before this submission, a submission of the same write from this
+// client under the nonce was accepted or may have reached the node.
+func (a *nonceAllocator) settle(did string, nonce uint64, outcome nonceOutcome, digest [32]byte) (sentBefore bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	acct := a.account(did)
-	sentBefore = acct.sent[nonce]
+	sentBefore = acct.sent[nonce][digest]
 	claim := acct.claims[nonce]
 	if claim != nil && claim.inFlight > 0 {
 		claim.inFlight--
@@ -390,7 +391,10 @@ func (a *nonceAllocator) settle(did string, nonce uint64, outcome nonceOutcome) 
 		}
 		claim.held = now
 		if outcome != nonceHeld {
-			acct.sent[nonce] = true
+			if acct.sent[nonce] == nil {
+				acct.sent[nonce] = map[[32]byte]bool{}
+			}
+			acct.sent[nonce][digest] = true
 		}
 	}
 	if claim != nil && !claim.live(now) {
@@ -512,8 +516,9 @@ func (c *Client) NextNonce(ctx context.Context, did string) (uint64, error) {
 // registered) only after it lands, since writes in flight may land in any
 // order. A write refused in its block also uses its nonce (every kind the
 // SDK sends except DeregisterSubgrove, whose refusal leaves it unused): read
-// what it wrote, or look its TxHash up (consensus.Client.GetTx), to know it
-// took effect.
+// what it wrote, or look the TxHash of its WriteResult up
+// (consensus.Client.GetTx), to know it took effect. A *WriteError carries no
+// TxHash: the API's answer to a failed submission names none.
 //
 // Set an RPC URL (WithRPCURL) when writes run concurrently. Without one only
 // the base is known, and the base advances only over used nonces with no gap
@@ -591,10 +596,12 @@ func WithNonce(nonce uint64) WriteOption {
 //
 // A refusal that says a nonce the client handed out is already used means no
 // transaction under it can run, so the write is built again under the next
-// free nonce, unless this client earlier sent a submission under that nonce
-// that was accepted or may have reached the node: that submission may be an
-// earlier attempt of this write, so the write fails with ErrNonceUsed rather
-// than run twice. Every earlier attempt within one call was refused at
+// free nonce, unless this client earlier sent the same write (the same
+// transaction but for its nonce and signature; see writeDigest) under that
+// nonce and that submission was accepted or may have reached the node: it may
+// be what used the nonce, so the write fails with ErrNonceUsed rather than run
+// twice. A different write that used the nonce says nothing about this one,
+// which is signed again. Every earlier attempt within one call was refused at
 // CheckTx, so none of them can run.
 func (c *Client) signedWrite(ctx context.Context, did string, opts []WriteOption, build func(nonce uint64) (interface{}, error)) (*WriteResult, error) {
 	var o writeOptions
@@ -621,8 +628,8 @@ func (c *Client) signedWrite(ctx context.Context, did string, opts []WriteOption
 			return result, err
 		}
 		if sentBefore {
-			return nil, usedNonceError(err, "this client sent a write under it before, which may be an earlier attempt of this one; "+
-				"read what that write wrote before sending this one again")
+			return nil, usedNonceError(err, "this client sent this same write under it before, and that attempt may have landed; "+
+				"read what the write wrote before sending it again")
 		}
 		refused = err
 	}
@@ -652,12 +659,14 @@ func (c *Client) writeUnder(ctx context.Context, did string, nonce uint64, build
 
 // writeOnce builds the transaction under nonce, which the caller has taken or
 // begun a submission under, submits it once, and settles the nonce with the
-// outcome (also if build panics). It reports whether a submission from this
-// client under the nonce was accepted or may have reached the node before
-// this one. A failure after the transaction was built is a *WriteError.
+// outcome (also if build panics). It reports whether a submission of the same
+// write (see writeDigest) from this client under the nonce was accepted or may
+// have reached the node before this one. A failure after the transaction was
+// built is a *WriteError.
 func (c *Client) writeOnce(ctx context.Context, did string, nonce uint64, build func(nonce uint64) (interface{}, error)) (result *WriteResult, outcome nonceOutcome, sentBefore bool, err error) {
 	outcome = nonceFree
-	defer func() { sentBefore = c.nonces.settle(did, nonce, outcome) }()
+	var digest [32]byte
+	defer func() { sentBefore = c.nonces.settle(did, nonce, outcome, digest) }()
 	tx, err := build(nonce)
 	if err != nil {
 		return nil, nonceFree, false, err
@@ -666,12 +675,34 @@ func (c *Client) writeOnce(ctx context.Context, did string, nonce uint64, build 
 	if err != nil {
 		return nil, nonceFree, false, NewSerializationError("failed to marshal transaction", err)
 	}
+	digest = writeDigest(body)
 	var hash string
 	hash, outcome, err = c.postTx(ctx, body, did, nonce)
 	if err != nil {
 		return nil, outcome, false, &WriteError{DID: did, Nonce: nonce, MayLand: outcome == nonceUnknown, Err: err}
 	}
 	return &WriteResult{DID: did, Nonce: nonce, TxHash: hash}, outcome, false, nil
+}
+
+// writeDigest identifies the write a transaction body makes apart from the
+// nonce it is signed under: the SHA-256 of the body with its transaction's
+// "signature" and "nonce" fields removed (object keys sorted). Two
+// submissions of the same write under different nonces share it. A body that
+// isn't one transaction object is digested whole.
+func writeDigest(body []byte) [32]byte {
+	var tx map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(body, &tx); err != nil || len(tx) != 1 {
+		return sha256.Sum256(body)
+	}
+	for _, fields := range tx {
+		delete(fields, "signature")
+		delete(fields, "nonce")
+	}
+	canonical, err := json.Marshal(tx)
+	if err != nil {
+		return sha256.Sum256(body)
+	}
+	return sha256.Sum256(canonical)
 }
 
 // usedNonceError is a write refused because its nonce is used, as ErrNonceUsed
@@ -695,7 +726,8 @@ func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, bod
 	}
 	c.nonces.begin(did, nonce)
 	outcome := nonceFree
-	defer func() { c.nonces.settle(did, nonce, outcome) }()
+	digest := writeDigest(body)
+	defer func() { c.nonces.settle(did, nonce, outcome, digest) }()
 	var err error
 	_, outcome, err = c.postTx(ctx, body, did, nonce)
 	return err
