@@ -1,14 +1,10 @@
-// Package willow — verifiable Ethereum state reads.
+// Package willow — Ethereum state reads served by an indexer.
 //
 // Counterpart to the indexer's POST /verifiable-rpc/eth/state and
 // /verifiable-rpc/eth/call routes. Walks EIP-1186 MPT proofs locally
-// and exposes ergonomic storage-layout helpers (ERC-20 balance,
-// allowance, ERC-721 owner, Uniswap V2 reserves).
+// and exposes a storage-layout helper (ERC-20 balance).
 //
-// Three trust modes follow the Rust/TS/Python SDK conventions:
-//   - StateVerifyModeStrict     (default): verify every MPT proof.
-//   - StateVerifyModeAnchorOnly         : skip walks, trust the root.
-//   - StateVerifyModeDisabled           : passthrough.
+// The SDK doesn't verify these reads against Ethereum (see EthOperations).
 package willow
 
 import (
@@ -26,21 +22,41 @@ import (
 	"golang.org/x/crypto/sha3"
 )
 
-type StateVerifyMode int
+// EthProofMode selects how much of an indexer's Ethereum state answer
+// EthOperations checks. No mode verifies the answer against Ethereum (see
+// EthOperations).
+type EthProofMode int
 
 const (
-	StateVerifyModeStrict StateVerifyMode = iota
-	StateVerifyModeAnchorOnly
-	StateVerifyModeDisabled
+	// EthWalkProofs (the default) walks the account proof and every storage
+	// proof against the state root the answer itself carries.
+	EthWalkProofs EthProofMode = iota
+	// EthSkipProofs returns the answer's values without walking its proofs.
+	EthSkipProofs
+)
+
+// StateVerifyMode is EthProofMode.
+//
+// Deprecated: no mode verifies a read against Ethereum; use EthProofMode.
+type StateVerifyMode = EthProofMode
+
+const (
+	// Deprecated: use EthWalkProofs, which walks the proofs against the
+	// answer's own state root; the SDK doesn't verify that root.
+	StateVerifyModeStrict = EthWalkProofs
+	// Deprecated: use EthSkipProofs; no root is anchored to anything trusted.
+	StateVerifyModeAnchorOnly = EthSkipProofs
+	// Deprecated: use EthSkipProofs.
+	StateVerifyModeDisabled EthProofMode = 2
 )
 
 // wire types -----------------------------------------------------------------
 
 type wireAccountState struct {
-	Nonce       uint64  `json:"nonce"`
-	Balance     []int   `json:"balance"`
-	StorageHash []int   `json:"storage_hash"`
-	CodeHash    []int   `json:"code_hash"`
+	Nonce       uint64 `json:"nonce"`
+	Balance     []int  `json:"balance"`
+	StorageHash []int  `json:"storage_hash"`
+	CodeHash    []int  `json:"code_hash"`
 }
 
 type wireStorageSlot struct {
@@ -79,12 +95,16 @@ type wireEnvelope struct {
 
 // public types ---------------------------------------------------------------
 
-type VerifiedStorage struct {
+// EthStorageSlot is a storage slot's value as an indexer's answer carries it.
+type EthStorageSlot struct {
 	Slot  string
 	Value *big.Int
 }
 
-type VerifiedStateRead struct {
+// EthStateRead is an account's state (and asked storage slots) at a block, as
+// an indexer's answer carries it, unverified against Ethereum (see
+// EthOperations). Mode says whether its proofs were walked against StateRoot.
+type EthStateRead struct {
 	Address     string
 	BlockNumber uint64
 	BlockHash   string
@@ -93,24 +113,55 @@ type VerifiedStateRead struct {
 	Balance     *big.Int
 	StorageHash string
 	CodeHash    string
-	Storage     []VerifiedStorage
-	Mode        StateVerifyMode
+	Storage     []EthStorageSlot
+	Mode        EthProofMode
 }
 
-type VerifiedCall struct {
+// EthCallResult is an eth_call as an indexer ran it: its result, and the
+// state of every account the call touched, unverified against Ethereum (see
+// EthOperations). No proof binds Result: the SDK doesn't run the call.
+type EthCallResult struct {
 	BlockNumber      uint64
 	BlockHash        string
 	StateRoot        string
 	Result           []byte
-	AccessStateReads []VerifiedStateRead
-	Mode             StateVerifyMode
+	AccessStateReads []EthStateRead
+	Mode             EthProofMode
 }
 
-// EthOperations is the SDK entry point for verifiable Ethereum state reads.
+// VerifiedStorage is EthStorageSlot.
+//
+// Deprecated: the value isn't verified against Ethereum; use EthStorageSlot.
+type VerifiedStorage = EthStorageSlot
+
+// VerifiedStateRead is EthStateRead.
+//
+// Deprecated: the state isn't verified against Ethereum; use EthStateRead.
+type VerifiedStateRead = EthStateRead
+
+// VerifiedCall is EthCallResult.
+//
+// Deprecated: the call isn't verified against Ethereum; use EthCallResult.
+type VerifiedCall = EthCallResult
+
+// EthOperations reads Ethereum state through an indexer.
+//
+// Nothing it returns is verified against Ethereum. Each answer carries the
+// block's state root, and its MPT proofs bind the account and slot values to
+// that root, but the SDK has no trusted source of Ethereum block headers (it
+// runs no Ethereum light client; the block hash and state root it has are the
+// indexer's), so it can't check that the root is the state root of the block
+// asked for. Treat every result as the indexer's claim. In EthWalkProofs mode
+// (the default) the SDK walks the proofs, so a result is at least consistent
+// with the root the answer names; in EthSkipProofs mode it doesn't.
+//
+// In every mode an answer must be about what was asked: a state read's proof
+// must be for the address, block, and slots requested, in order, and a call's
+// state proofs for the block requested, under the answer's state root.
 type EthOperations struct {
 	indexerBaseURL string
 	http           *http.Client
-	Mode           StateVerifyMode
+	Mode           EthProofMode
 }
 
 func NewEthOperations(indexerBaseURL string, httpClient *http.Client) *EthOperations {
@@ -120,53 +171,97 @@ func NewEthOperations(indexerBaseURL string, httpClient *http.Client) *EthOperat
 	return &EthOperations{
 		indexerBaseURL: strings.TrimRight(indexerBaseURL, "/"),
 		http:           httpClient,
-		Mode:           StateVerifyModeStrict,
+		Mode:           EthWalkProofs,
 	}
 }
 
-// GetState fetches verified account state (+ optional storage slots) at blockNumber.
+// GetState reads an account's state, and the storage slots asked for, at
+// blockNumber, as the indexer reports it (see EthOperations). address is 20
+// bytes of hex; each slot is up to 32 bytes of hex, read as a big-endian
+// number and sent as 32 bytes. It returns an error, rather than the answer,
+// when the answer's proof isn't for that address, block, and those slots in
+// that order, or, in EthWalkProofs mode, when a proof doesn't walk.
 func (e *EthOperations) GetState(
 	ctx context.Context,
 	address string,
 	slots []string,
 	blockNumber uint64,
-) (*VerifiedStateRead, error) {
+) (*EthStateRead, error) {
+	addr, err := hexDecode20(address)
+	if err != nil {
+		return nil, NewValidationError(fmt.Sprintf("address: %v", err))
+	}
+	keys := make([][]byte, len(slots))
+	sent := make([]string, len(slots))
+	for i, s := range slots {
+		if keys[i], err = slotKey(s); err != nil {
+			return nil, NewValidationError(fmt.Sprintf("slot %d: %v", i, err))
+		}
+		sent[i] = "0x" + hex.EncodeToString(keys[i])
+	}
 	body := map[string]interface{}{
-		"address": address,
-		"slots":   slots,
+		"address": "0x" + hex.EncodeToString(addr),
+		"slots":   sent,
 		"block":   blockNumber,
 	}
 	envelope, err := e.post(ctx, "/verifiable-rpc/eth/state", body)
 	if err != nil {
 		return nil, err
 	}
-	if len(envelope.StateProofs) == 0 {
-		return nil, errors.New("response carried no state proof")
+	if len(envelope.StateProofs) != 1 {
+		return nil, fmt.Errorf("the answer carried %d state proofs, not 1", len(envelope.StateProofs))
 	}
 	proof := &envelope.StateProofs[0]
-	if e.Mode == StateVerifyModeStrict {
-		if err := VerifyStateProof(proof); err != nil {
+	if err := checkStateAnswer(proof, addr, keys, blockNumber); err != nil {
+		return nil, err
+	}
+	if e.Mode == EthWalkProofs {
+		if err := walkStateProof(proof); err != nil {
 			return nil, err
 		}
 	}
-	return toVerifiedStateRead(proof, e.Mode), nil
+	return toEthStateRead(proof, e.Mode), nil
 }
 
-// GetCall executes tx via the indexer's verified REVM and returns the
-// ABI-encoded result plus state proofs for every touched account.
+// GetCall asks the indexer to run tx at blockNumber and returns the
+// ABI-encoded result it reports, with its state proofs for every account the
+// call touched (see EthOperations). No proof binds the result. It returns an
+// error, rather than the answer, when a state proof isn't for blockNumber or
+// isn't under the answer's state root, or, in EthWalkProofs mode, when a
+// proof doesn't walk.
 func (e *EthOperations) GetCall(
 	ctx context.Context,
 	tx map[string]interface{},
 	blockNumber uint64,
-) (*VerifiedCall, error) {
+) (*EthCallResult, error) {
 	body := map[string]interface{}{"tx": tx, "block": blockNumber}
 	envelope, err := e.post(ctx, "/verifiable-rpc/eth/call", body)
 	if err != nil {
 		return nil, err
 	}
-	if e.Mode == StateVerifyModeStrict {
+	if envelope.BlockRange[0] != blockNumber {
+		return nil, fmt.Errorf("the answer is for block %d, not %d", envelope.BlockRange[0], blockNumber)
+	}
+	stateRoot, err := wireBytes(envelope.StateRoot, 32, "state root")
+	if err != nil {
+		return nil, err
+	}
+	for i := range envelope.StateProofs {
+		p := &envelope.StateProofs[i]
+		if p.BlockNumber != blockNumber {
+			return nil, fmt.Errorf("state proof %d is for block %d, not %d", i, p.BlockNumber, blockNumber)
+		}
+		root, err := wireBytes(p.StateRoot, 32, fmt.Sprintf("state proof %d's state root", i))
+		if err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(root, stateRoot) {
+			return nil, fmt.Errorf("state proof %d is under another state root than the answer's", i)
+		}
+	}
+	if e.Mode == EthWalkProofs {
 		for i := range envelope.StateProofs {
-			if err := VerifyStateProof(&envelope.StateProofs[i]); err != nil {
+			if err := walkStateProof(&envelope.StateProofs[i]); err != nil {
 				return nil, err
 			}
 		}
@@ -182,11 +277,11 @@ func (e *EthOperations) GetCall(
 	} else {
 		blockHash = "0x" + strings.Repeat("00", 32)
 	}
-	reads := make([]VerifiedStateRead, len(envelope.StateProofs))
+	reads := make([]EthStateRead, len(envelope.StateProofs))
 	for i := range envelope.StateProofs {
-		reads[i] = *toVerifiedStateRead(&envelope.StateProofs[i], e.Mode)
+		reads[i] = *toEthStateRead(&envelope.StateProofs[i], e.Mode)
 	}
-	return &VerifiedCall{
+	return &EthCallResult{
 		BlockNumber:      envelope.BlockRange[0],
 		BlockHash:        blockHash,
 		StateRoot:        bytesIntsToHex(envelope.StateRoot, 32),
@@ -197,7 +292,8 @@ func (e *EthOperations) GetCall(
 }
 
 // Erc20Balance returns balanceOf(holder) for a token whose balance
-// mapping lives at slot balanceSlot.
+// mapping lives at slot balanceSlot, as the indexer reports it (see
+// EthOperations): the value of the slot GetState asked for.
 func (e *EthOperations) Erc20Balance(
 	ctx context.Context,
 	token, holder string,
@@ -213,10 +309,73 @@ func (e *EthOperations) Erc20Balance(
 	if err != nil {
 		return nil, err
 	}
-	if len(state.Storage) == 0 {
-		return nil, errors.New("erc20Balance: empty storage proofs")
+	if len(state.Storage) != 1 {
+		return nil, errors.New("erc20Balance: no storage value for the balance slot")
 	}
 	return state.Storage[0].Value, nil
+}
+
+// slotKey reads a storage slot given as up to 32 bytes of hex (with or without
+// 0x) as a big-endian number, left-padded to 32 bytes.
+func slotKey(s string) ([]byte, error) {
+	digits := strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	if digits == "" || len(digits) > 64 {
+		return nil, fmt.Errorf("%q isn't 1 to 64 hex digits", s)
+	}
+	if len(digits)%2 == 1 {
+		digits = "0" + digits
+	}
+	b, err := hex.DecodeString(digits)
+	if err != nil {
+		return nil, fmt.Errorf("%q isn't hex: %w", s, err)
+	}
+	key := make([]byte, 32)
+	copy(key[32-len(b):], b)
+	return key, nil
+}
+
+// wireBytes returns ints as bytes, refusing a length other than n or a value
+// outside 0..255. what names the field.
+func wireBytes(ints []int, n int, what string) ([]byte, error) {
+	if len(ints) != n {
+		return nil, fmt.Errorf("%s is %d bytes, not %d", what, len(ints), n)
+	}
+	b := make([]byte, n)
+	for i, v := range ints {
+		if v < 0 || v > 255 {
+			return nil, fmt.Errorf("%s holds %d, which isn't a byte", what, v)
+		}
+		b[i] = byte(v)
+	}
+	return b, nil
+}
+
+// checkStateAnswer refuses a state proof that isn't for address at
+// blockNumber with exactly the storage slots keys, in order.
+func checkStateAnswer(p *wireStateProof, address []byte, keys [][]byte, blockNumber uint64) error {
+	got, err := wireBytes(p.Address, 20, "the proof's address")
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(got, address) {
+		return fmt.Errorf("the proof is for address 0x%x, not 0x%x", got, address)
+	}
+	if p.BlockNumber != blockNumber {
+		return fmt.Errorf("the proof is for block %d, not %d", p.BlockNumber, blockNumber)
+	}
+	if len(p.StorageProofs) != len(keys) {
+		return fmt.Errorf("the proof carries %d storage slots, not the %d asked for", len(p.StorageProofs), len(keys))
+	}
+	for i, sp := range p.StorageProofs {
+		slot, err := wireBytes(sp.Slot, 32, fmt.Sprintf("storage proof %d's slot", i))
+		if err != nil {
+			return err
+		}
+		if !bytes.Equal(slot, keys[i]) {
+			return fmt.Errorf("storage proof %d is for slot 0x%x, not 0x%x", i, slot, keys[i])
+		}
+	}
+	return nil
 }
 
 func (e *EthOperations) post(ctx context.Context, path string, body interface{}) (*wireEnvelope, error) {
@@ -249,9 +408,11 @@ func (e *EthOperations) post(ctx context.Context, path string, body interface{})
 	return &env, nil
 }
 
-// VerifyStateProof walks the account MPT proof and every storage proof.
-// Returns an error on the first mismatch.
-func VerifyStateProof(proof *wireStateProof) error {
+// walkStateProof walks the account MPT proof against the proof's own state
+// root, and every storage proof against the account's storage hash. Returns an
+// error on the first mismatch. It checks the proof is consistent with that
+// root, not that the root is Ethereum's.
+func walkStateProof(proof *wireStateProof) error {
 	stateRoot := intsToBytes(proof.StateRoot)
 	address := intsToBytes(proof.Address)
 	addrHash := keccak256(address)
@@ -586,15 +747,15 @@ func hexDecode20(s string) ([]byte, error) {
 	return hex.DecodeString(s)
 }
 
-func toVerifiedStateRead(p *wireStateProof, mode StateVerifyMode) *VerifiedStateRead {
-	storage := make([]VerifiedStorage, len(p.StorageProofs))
+func toEthStateRead(p *wireStateProof, mode EthProofMode) *EthStateRead {
+	storage := make([]EthStorageSlot, len(p.StorageProofs))
 	for i, sp := range p.StorageProofs {
-		storage[i] = VerifiedStorage{
+		storage[i] = EthStorageSlot{
 			Slot:  bytesIntsToHex(sp.Slot, 32),
 			Value: new(big.Int).SetBytes(intsToBytes(sp.Value)),
 		}
 	}
-	return &VerifiedStateRead{
+	return &EthStateRead{
 		Address:     bytesIntsToHex(p.Address, 20),
 		BlockNumber: p.BlockNumber,
 		BlockHash:   bytesIntsToHex(p.BlockHash, 32),
