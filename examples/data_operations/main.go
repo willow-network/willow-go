@@ -14,6 +14,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -27,8 +28,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// Setup: Create client and authenticate
-	client, err := willow.NewClient("http://localhost:3031")
+	// Setup: Create client and authenticate. This example has writes in
+	// flight together, so it sets the CometBFT RPC URL: the client then reads
+	// which nonces above the account nonce are used, and WaitUntilLanded sees
+	// a write land even while an earlier one is pending.
+	client, err := willow.NewClient("http://localhost:3031",
+		willow.WithRPCURL("http://localhost:26657"))
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -66,7 +71,8 @@ func main() {
 	// 2. Store more items. The API has no batch write: each item is its own
 	// StoreData transaction under its own nonce, so they can be in flight
 	// together (up to 24 per identity) and land in any order. Wait for each
-	// nonce to land before reading them.
+	// nonce to land before reading them. A write whose error has MayLand set
+	// is sent again under its own nonce (WithNonce), so it runs at most once.
 	fmt.Println("\n2. Storing more items...")
 	items := []willow.StoreRequest{
 		{
@@ -101,6 +107,10 @@ func main() {
 	var writes []*willow.WriteResult
 	for _, item := range items {
 		write, err := client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data)
+		var werr *willow.WriteError
+		if errors.As(err, &werr) && werr.MayLand {
+			write, err = client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data, willow.WithNonce(werr.Nonce))
+		}
 		if err != nil {
 			fmt.Printf("   Note: %s: %v\n", item.Key, err)
 			continue

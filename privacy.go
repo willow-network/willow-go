@@ -111,13 +111,13 @@ type grantSubgroveKeyRequest struct {
 // FormatGrantSubgroveKeyMessage, which binds every field of the grant and the
 // transaction's nonce (see Client.NextNonce). It returns once CheckTx accepts
 // the transaction, with the nonce and transaction hash.
-func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant) (*WriteResult, error) {
+func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return p.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		message, err := FormatGrantSubgroveKeyMessage(subgroveID, identity.DID(), grant, nonce)
 		if err != nil {
 			return nil, err
@@ -152,13 +152,13 @@ type revokeSubgroveKeyRequest struct {
 // RevokeSubgroveKey broadcasts a RevokeSubgroveKey transaction, revoking
 // the specified DID's access to the subgrove's encryption key. It returns once
 // CheckTx accepts the transaction, with the nonce and transaction hash.
-func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string) (*WriteResult, error) {
+func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return p.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
 			subgroveID, revokeeDID, identity.DID(), nonce)
 		signature, err := identity.Sign([]byte(message))
@@ -195,7 +195,7 @@ type rotateSubgroveKeyRequest struct {
 // FormatRotateSubgroveKeyMessage, which binds every grant, their order and
 // count, and the transaction's nonce. It returns once CheckTx accepts the
 // transaction, with the nonce and transaction hash.
-func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) (*WriteResult, error) {
+func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant, opts ...WriteOption) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID st
 		// Sent as an empty list: the chain reads new_grants as a list.
 		newGrants = []EncryptedKeyGrant{}
 	}
-	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return p.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		message, err := FormatRotateSubgroveKeyMessage(subgroveID, identity.DID(), newEpoch, newGrants, nonce)
 		if err != nil {
 			return nil, err

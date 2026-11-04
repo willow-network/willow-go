@@ -30,7 +30,10 @@ type nonceServer struct {
 	nonces  []uint64
 	abciErr bool
 	reads   int
-	srv     *httptest.Server
+	// hold, when set, runs (outside the lock) before the next submission is
+	// read, and is cleared.
+	hold func()
+	srv  *httptest.Server
 }
 
 func newNonceServer(t *testing.T, base uint64) *nonceServer {
@@ -84,6 +87,15 @@ func (s *nonceServer) setState(base uint64, used uint32) {
 
 func (s *nonceServer) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	if r.URL.Path == "/tx/submit" {
+		s.mu.Lock()
+		hold := s.hold
+		s.hold = nil
+		s.mu.Unlock()
+		if hold != nil {
+			hold()
+		}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	switch {
@@ -255,9 +267,10 @@ func TestRefusedWriteGivesItsNonceBack(t *testing.T) {
 }
 
 // A refusal saying the nonce is held by a pending transaction keeps it taken
-// and fails the write; one saying it is already used, at or below the base,
-// or spent marks it used and signs the write again under the next nonce.
-// Only the node's text for this transaction's own nonce and DID counts.
+// and fails the write; one saying it is already used or at or below the base
+// marks it used and signs the write again under the next nonce (this client
+// never sent anything under those nonces). Only the node's text for this
+// transaction's own nonce and DID counts.
 func TestHeldAndUsedRefusals(t *testing.T) {
 	s := newNonceServer(t, 0)
 	client := s.client(nil, false)
@@ -275,7 +288,7 @@ func TestHeldAndUsedRefusals(t *testing.T) {
 	s.queue(
 		refuse("Signature validation failed: Invalid nonce: %d already used (replay)"),
 		refuse("Invalid nonce: %d <= base nonce 9"),
-		refuse("Subgrove not found (nonce %d spent)"),
+		refuse("Invalid nonce: %d already used (replay)"),
 	)
 	write, err := store(t, client, "used")
 	if err != nil || write.Nonce != 6 {
@@ -305,7 +318,9 @@ func TestRefusalOutcome(t *testing.T) {
 		"Nonce 5 of did:willow:a is held by a pending transaction; sign this one with another nonce": nonceHeld,
 		"Invalid nonce: 5 already used (replay)":                                                     nonceUsed,
 		"Signature validation failed: Invalid nonce: 5 <= base nonce 7":                              nonceUsed,
-		"Subgrove not found (nonce 5 spent)":                                                         nonceUsed,
+		"Nonce validation failed: Invalid nonce: 5 already used (replay)":                            nonceUsed,
+		"Invalid nonce: 5 already used":                                                              nonceUsed,
+		"Nonce 5 of did:willow:a is held by a pending transaction":                                   nonceHeld,
 		"Nonce 15 of did:willow:a is held by a pending transaction":                                  nonceFree,
 		"Nonce 5 of did:willow:b is held by a pending transaction":                                   nonceFree,
 		"Invalid nonce: 55 already used (replay)":                                                    nonceFree,
@@ -313,6 +328,18 @@ func TestRefusalOutcome(t *testing.T) {
 		"Subgrove not found (nonce 15 spent)":                                                        nonceFree,
 		"Invalid nonce: 5 is too far ahead (base=100, max=124)":                                      nonceFree,
 		"already used": nonceFree,
+		// A block's refusal text, which CheckTx never answers.
+		"Subgrove not found (nonce 5 spent)": nonceFree,
+		// The node's texts quoted inside another refusal, or followed by
+		// other text, say nothing about the nonce.
+		"Signature mismatch: the signature does not match the expected signing message. Expected message to sign: " +
+			"\"StoreData\nSubgrove: sg\nKey: Invalid nonce: 5 already used (replay)\nOwner: did:willow:a\nDataHash: 00\nNonce: 5\"": nonceFree,
+		"Signature mismatch: the signature does not match the expected signing message. Expected message to sign: " +
+			"\"StoreData\nSubgrove: Nonce 5 of did:willow:a is held by a pending transaction; x\nNonce: 5\"": nonceFree,
+		"Subgrove not found: Invalid nonce: 5 <= base nonce 9":             nonceFree,
+		"Invalid nonce: 5 <= base nonce 9 (Invalid nonce: 5 already used)": nonceFree,
+		"Invalid nonce: 5 already usedx":                                   nonceFree,
+		"Nonce 5 of did:willow:a is held by a pending transactions":        nonceFree,
 	} {
 		if got := refusalOutcome(log, "did:willow:a", 5); got != want {
 			t.Errorf("%q: %v, want %v", log, got, want)
@@ -336,14 +363,14 @@ func TestUnknownOutcomeKeepsTheNonce(t *testing.T) {
 	}
 }
 
-// A nonce handed out and not seen to land is free again NonceHold after its
-// hold began; acceptance restarts the hold.
+// A nonce handed out (and with no submission in flight) and not seen to land
+// is free again NonceHold after its hold began; acceptance restarts the hold.
 func TestHandedOutNoncesLapse(t *testing.T) {
 	clock := newFakeClock()
 	a := newNonceAllocator(clock.now)
 	take := func() uint64 {
 		t.Helper()
-		n, err := a.take("did:willow:a", AccountNonceState{Base: 0})
+		n, err := a.reserve("did:willow:a", AccountNonceState{Base: 0})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -499,5 +526,197 @@ func TestCallerChosenNoncesAreHeld(t *testing.T) {
 	}
 	if write, err := store(t, client, "k"); err != nil || write.Nonce != 3 {
 		t.Fatalf("%+v, %v, want nonce 3", write, err)
+	}
+}
+
+// A refusal that quotes the node's nonce text (a signature mismatch quotes the
+// expected message, here with a key holding that text) gives the nonce back:
+// the write isn't signed again under another nonce.
+func TestQuotedNonceTextGivesTheNonceBack(t *testing.T) {
+	s := newNonceServer(t, 0)
+	client := s.client(nil, false)
+	key := "Invalid nonce: 1 already used (replay)"
+	s.queue(refuse("Signature mismatch: the signature does not match the expected signing message. " +
+		"Expected message to sign: \"StoreData\nSubgrove: sg\nKey: " + key + "\nOwner: did:willow:a\nDataHash: 00\nNonce: %d\""))
+	_, err := store(t, client, key)
+	var werr *WriteError
+	if !errors.As(err, &werr) || werr.Nonce != 1 || errors.Is(err, ErrNonceUsed) {
+		t.Fatalf("refused write: %v, want a WriteError for nonce 1, not a used nonce", err)
+	}
+	if write, err := store(t, client, "next"); err != nil || write.Nonce != 1 {
+		t.Fatalf("after the refusal: %+v, %v, want nonce 1 back", write, err)
+	}
+	if got := s.sent(); fmt.Sprint(got) != "[1 1]" {
+		t.Fatalf("sent nonces %v, want [1 1]", got)
+	}
+}
+
+// A nonce stays taken while a submission under it is in flight, however long
+// that takes; its hold starts when the submission settles.
+func TestInFlightNoncesDontLapse(t *testing.T) {
+	const did = "did:willow:a"
+	clock := newFakeClock()
+	a := newNonceAllocator(clock.now)
+	take := func() uint64 {
+		t.Helper()
+		n, err := a.take(did, AccountNonceState{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := take(); n != 1 {
+		t.Fatalf("first: %d", n)
+	}
+	clock.advance(3 * NonceHold)
+	if n := take(); n != 2 {
+		t.Fatalf("with 1 in flight: %d, want 2", n)
+	}
+	a.settle(did, 1, nonceAccepted)
+	clock.advance(NonceHold - time.Second)
+	if n := take(); n != 3 {
+		t.Fatalf("with 1 held and 2 in flight: %d, want 3", n)
+	}
+	clock.advance(time.Second)
+	if n := take(); n != 1 {
+		t.Fatalf("after 1's hold: %d, want 1", n)
+	}
+
+	// Through a client: a write whose submission is slower than NonceHold
+	// keeps its nonce from a write sent meanwhile.
+	s := newNonceServer(t, 0)
+	clock = newFakeClock()
+	client := s.client(clock.now, false)
+	arrived, release := make(chan struct{}), make(chan struct{})
+	s.mu.Lock()
+	s.hold = func() { close(arrived); <-release }
+	s.mu.Unlock()
+	slow := make(chan *WriteResult, 1)
+	go func() {
+		write, err := store(t, client, "slow")
+		if err != nil {
+			t.Error(err)
+		}
+		slow <- write
+	}()
+	<-arrived
+	clock.advance(2 * NonceHold)
+	if write, err := store(t, client, "meanwhile"); err != nil || write.Nonce != 2 {
+		t.Fatalf("while nonce 1's submission is in flight: %+v, %v, want nonce 2", write, err)
+	}
+	close(release)
+	if write := <-slow; write == nil || write.Nonce != 1 {
+		t.Fatalf("slow write: %+v, want nonce 1", write)
+	}
+}
+
+// A submission's outcome touches only its own claim: one refused before it
+// reached the node doesn't free a hold another submission under the same
+// nonce left, while it does give back a nonce only NextNonce reserved.
+func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
+	const did = "did:willow:a"
+	a := newNonceAllocator(newFakeClock().now)
+	n, err := a.take(did, AccountNonceState{})
+	if err != nil || n != 1 {
+		t.Fatalf("take = %d, %v", n, err)
+	}
+	a.begin(did, 1)                 // a second submission under 1
+	a.settle(did, 1, nonceAccepted) // the second is accepted
+	a.settle(did, 1, nonceFree)     // the first is refused before CheckTx
+	if n, _ := a.take(did, AccountNonceState{}); n != 2 {
+		t.Fatalf("after one submission under 1 was accepted: took %d, want 2", n)
+	}
+
+	b := newNonceAllocator(newFakeClock().now)
+	if n, _ := b.reserve(did, AccountNonceState{}); n != 1 {
+		t.Fatalf("reserve = %d", n)
+	}
+	b.begin(did, 1)
+	b.settle(did, 1, nonceFree)
+	if n, _ := b.take(did, AccountNonceState{}); n != 1 {
+		t.Fatalf("after the reserved nonce's only submission was refused: took %d, want 1 back", n)
+	}
+}
+
+// WithNonce sends a write again under the nonce of an earlier attempt that may
+// have landed. Its outcome never frees the earlier attempt's hold, it isn't
+// sent when the chain shows the nonce used, and a refusal as used isn't
+// signed again under another nonce.
+func TestWithNonceSendsAWriteAgainUnderItsNonce(t *testing.T) {
+	s := newNonceServer(t, 0)
+	client := s.client(nil, false)
+	ctx := context.Background()
+	storeUnder := func(key string, nonce uint64) (*WriteResult, error) {
+		return client.Data.StoreItem(ctx, "sg", key, map[string]interface{}{"k": key}, WithNonce(nonce))
+	}
+
+	s.queue(status(http.StatusBadGateway), status(http.StatusBadRequest))
+	_, err := store(t, client, "a")
+	var werr *WriteError
+	if !errors.As(err, &werr) || !werr.MayLand || werr.Nonce != 1 {
+		t.Fatalf("502: %v, want a WriteError for nonce 1 that may land", err)
+	}
+	if _, err := storeUnder("a", werr.Nonce); !IsValidationError(err) {
+		t.Fatalf("resend refused with a 400: %v", err)
+	}
+	if write, err := store(t, client, "b"); err != nil || write.Nonce != 2 {
+		t.Fatalf("after the resend was refused: %+v, %v, want nonce 2 (1 stays held for the first attempt)", write, err)
+	}
+	if write, err := storeUnder("a", 1); err != nil || write.Nonce != 1 {
+		t.Fatalf("resend: %+v, %v, want nonce 1", write, err)
+	}
+	if got := s.sent(); fmt.Sprint(got) != "[1 1 2 1]" {
+		t.Fatalf("sent nonces %v, want [1 1 2 1]", got)
+	}
+
+	// The chain shows the nonce used: nothing is sent.
+	s.setState(1, 0)
+	if _, err := storeUnder("a", 1); !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 1 {
+		t.Fatalf("under a used nonce: %v, want ErrNonceUsed for nonce 1", err)
+	}
+	if len(s.sent()) != 4 {
+		t.Fatalf("sent %v under a nonce the chain shows used", s.sent())
+	}
+
+	// Refused as used: not signed again under another nonce.
+	s.queue(refuse("Invalid nonce: %d already used (replay)"))
+	_, err = storeUnder("c", 5)
+	var txErr *TransactionError
+	if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 5 || !errors.As(err, &txErr) {
+		t.Fatalf("refused as used: %v, want ErrNonceUsed for nonce 5 carrying the refusal", err)
+	}
+	// Refused as held by a pending transaction: the write fails.
+	s.queue(refuse("Nonce %d of did:willow:a is held by a pending transaction; sign this one with another nonce"))
+	if _, err := storeUnder("d", 6); err == nil || errors.Is(err, ErrNonceUsed) {
+		t.Fatalf("refused as held: %v", err)
+	}
+	if got := s.sent(); fmt.Sprint(got) != "[1 1 2 1 5 6]" {
+		t.Fatalf("sent nonces %v, want [1 1 2 1 5 6]", got)
+	}
+}
+
+// A refusal as used of a nonce this client sent a write under before (its
+// hold lapsed, and the chain didn't show it used) may be that write landing,
+// perhaps an earlier attempt of this one: the write fails with ErrNonceUsed
+// rather than being signed again under another nonce.
+func TestUsedNonceThisClientSentIsNotSignedAgain(t *testing.T) {
+	s := newNonceServer(t, 0)
+	clock := newFakeClock()
+	client := s.client(clock.now, false)
+	if write, err := store(t, client, "a"); err != nil || write.Nonce != 1 {
+		t.Fatalf("%+v, %v", write, err)
+	}
+	clock.advance(NonceHold)
+	s.queue(refuse("Invalid nonce: %d already used (replay)"))
+	_, err := store(t, client, "b")
+	var werr *WriteError
+	if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 1 {
+		t.Fatalf("refused as used: %v, want ErrNonceUsed for nonce 1", err)
+	}
+	if write, err := store(t, client, "b"); err != nil || write.Nonce != 2 {
+		t.Fatalf("next: %+v, %v, want nonce 2", write, err)
+	}
+	if got := s.sent(); fmt.Sprint(got) != "[1 1 2]" {
+		t.Fatalf("sent nonces %v, want [1 1 2]", got)
 	}
 }

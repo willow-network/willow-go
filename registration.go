@@ -33,7 +33,8 @@ type RegistrationOperations struct {
 // chain requires. It returns once the chain's CheckTx accepts the transaction,
 // with the nonce and transaction hash; the subgrove exists once the
 // transaction lands (see Client.WaitUntilLanded) and is applied in its block.
-func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*WriteResult, error) {
+// WithNonce sends it again under an earlier attempt's nonce.
+func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest, opts ...WriteOption) (*WriteResult, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
@@ -55,7 +56,7 @@ func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *Regi
 		return nil, err
 	}
 
-	return r.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return r.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		tx := &consensus.RegisterSubgroveTx{
 			SubgroveID:  req.SubgroveID,
 			Name:        req.Name,
@@ -118,12 +119,12 @@ func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, subgroveID 
 // consensus.DeregisterSubgroveSignMessage); the chain refunds its remaining
 // balance to the owner. It returns once CheckTx accepts the transaction, with
 // the nonce and transaction hash.
-func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string) (*WriteResult, error) {
+func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string, opts ...WriteOption) (*WriteResult, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 	identity := r.client.GetIdentity()
-	return r.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return r.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		signature, err := identity.Sign([]byte(consensus.DeregisterSubgroveSignMessage(subgroveID, identity.DID(), nonce)))
 		if err != nil {
 			return nil, err

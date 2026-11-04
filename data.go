@@ -33,8 +33,9 @@ func (d *DataOperations) Store(ctx context.Context, subgroveID string, data map[
 // per identity. StoreItem returns once the chain's CheckTx accepts the
 // transaction, with the nonce and transaction hash; the write is applied, or
 // refused, in its block (see Client.WaitUntilLanded). A failure after the
-// transaction was signed is a *WriteError naming its nonce.
-func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, data map[string]interface{}) (*WriteResult, error) {
+// transaction was signed is a *WriteError naming its nonce; to send it again
+// under that nonce, pass WithNonce.
+func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, data map[string]interface{}, opts ...WriteOption) (*WriteResult, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
@@ -47,7 +48,7 @@ func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, 
 	}
 
 	identity := d.client.GetIdentity()
-	return d.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+	return d.client.signedWrite(ctx, identity.DID(), opts, func(nonce uint64) (interface{}, error) {
 		message, err := FormatDataStoreMessage(subgroveID, key, identity.DID(), body, nonce)
 		if err != nil {
 			return nil, err

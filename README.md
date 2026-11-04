@@ -98,11 +98,12 @@ Ed25519 signs the message's UTF-8 bytes. secp256k1 signs their Keccak-256
 The chain accepts a nonce in `base+1 … base+24` that it hasn't used, where
 `base` (the account nonce) advances only over used nonces with no gap below
 them. The client keeps, per signing DID, the nonces it has handed out that
-haven't landed (each held for 120 s, the longest the node holds a pending
-transaction's nonce) and the nonces it has seen used, and each write takes
-the lowest nonce in the window that is neither, under a lock, so writes in
-flight together take distinct nonces. With `WithRPCURL` it reads which nonces
-above the base are used from the ABCI query
+haven't landed (each held while a submission under it is in flight, and for
+120 s, the longest the node holds a pending transaction's nonce, after CheckTx
+accepts it or after it may have reached the node) and the nonces it has seen
+used, and each write takes the lowest nonce in the window that is neither,
+under a lock, so writes in flight together take distinct nonces. With
+`WithRPCURL` it reads which nonces above the base are used from the ABCI query
 `/store/account_nonce_state/{did}`; otherwise it reads the base from the
 API's `/account/{did}/nonce`. With all 24 held, a write fails with an error
 wrapping `willow.ErrNonceWindowFull` and sends nothing: wait for earlier
@@ -114,19 +115,59 @@ chain shows the nonce used; writes in flight may land in any order, so send a
 write that depends on another only after the first has landed. A write
 refused in its block also uses its nonce (every kind the SDK sends except
 DeregisterSubgrove, whose refusal leaves the nonce unused): read what it
-wrote to know it took effect. `client.GetAccountNonce` reads the account's
-nonce state, and `client.NextNonce` hands out a nonce for a transaction the
-client doesn't build (a file write's `FileSigningOptions.Nonce`, or one sent
-with `consensus.Client.BroadcastTxSync`).
+wrote, or look its `TxHash` up with `consensus.Client.GetTx`, to know it took
+effect. `client.GetAccountNonce` reads the account's nonce state, and
+`client.NextNonce` hands out a nonce for a transaction the client doesn't
+build (a file write's `FileSigningOptions.Nonce`, or one sent with
+`consensus.Client.BroadcastTxSync`).
 
-A refusal at CheckTx gives its nonce back, unless it says the nonce is held
-by a pending transaction (the write fails and the nonce stays held) or
-already used or spent (the write is signed again under the next free nonce:
-no transaction under the used one can run). A write whose submission fails
-in transit (a network error or a 5xx) may still land: its error is a
-`*willow.WriteError` with `MayLand` set, naming the nonce. Wait for that
-nonce and read what the write wrote before sending it again, or it can run
-twice.
+Set `WithRPCURL` (the CometBFT RPC endpoint) when writes run concurrently.
+Without it the client reads only the base, which advances only over used
+nonces with no gap below them: a write that landed above a nonce not yet used
+(a write still pending, or one that never landed) doesn't show as landed, so
+`WaitUntilLanded` waits for every earlier nonce and fails at the context's
+deadline if one never lands. The client may also hand that write's nonce out
+again once its 120 s hold lapses, and a write refused for it then fails with
+`willow.ErrNonceUsed` (see below).
+
+```go
+client, err := willow.NewClient("http://localhost:3031",
+    willow.WithRPCURL("http://localhost:26657"))
+```
+
+A nonce stays held while a submission under it is in flight, however long
+that takes. A refusal at CheckTx gives its nonce back, unless it is the
+node's own error for that nonce saying it is held by a pending transaction
+(the write fails and the nonce stays held) or already used (the write is
+signed again under the next free nonce: no transaction under the used one can
+run). Text a refusal only quotes, such as the expected message a signature
+mismatch repeats, says nothing about the nonce.
+
+A write whose submission fails in transit (a network error or a 5xx) may
+still land: its error is a `*willow.WriteError` with `MayLand` set, naming the
+nonce. Send it again under that nonce with `willow.WithNonce`: whichever
+attempt lands first uses the nonce and the other is refused, so the write
+runs at most once.
+
+```go
+write, err := client.Data.StoreItem(ctx, "sg", "k", data)
+var werr *willow.WriteError
+if errors.As(err, &werr) && werr.MayLand {
+    write, err = client.Data.StoreItem(ctx, "sg", "k", data, willow.WithNonce(werr.Nonce))
+}
+```
+
+Under `WithNonce` the client sends nothing if the chain already shows the
+nonce used, and doesn't sign the write again under another nonce if it is
+refused as used; either way the error wraps `willow.ErrNonceUsed`: the
+earlier attempt may have landed, so read what it wrote before sending the
+write again without `WithNonce`. A refusal as held by a pending transaction,
+or another `MayLand` error (also how the API reports CometBFT refusing a
+transaction identical to one it has already seen), means the earlier attempt
+may be pending: wait for the nonce. Sending the write again under a fresh
+nonce while the earlier attempt is valid can run it twice. For the same
+reason, a write refused as used under a nonce this client sent a write under
+before fails with `willow.ErrNonceUsed` rather than being signed again.
 
 ## Quick Start
 
@@ -278,10 +319,11 @@ proof, err := client.Data.GetProof(ctx, "users", "user-123")
 
 `StoreItem` returns once the chain's CheckTx accepts the transaction; the
 write is applied, or refused, in its block. Each item is its own transaction
-under its own nonce, so up to 24 can be in flight per identity (see Nonces).
-The SDK doesn't build UpdateData or DeleteData
-transactions, so `Data.Update` and `Data.Delete` return an unsupported
-error, as do `Data.Store` (a StoreData needs a key) and `Data.BatchStore`.
+under its own nonce, so up to 24 can be in flight per identity; set
+`WithRPCURL` when they are, so `WaitUntilLanded` sees each one land (see
+Nonces). The SDK doesn't build UpdateData or DeleteData transactions, so
+`Data.Update` and `Data.Delete` return an unsupported error, as do
+`Data.Store` (a StoreData needs a key) and `Data.BatchStore`.
 
 ### Querying Data
 
