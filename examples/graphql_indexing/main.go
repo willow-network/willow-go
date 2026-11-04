@@ -41,9 +41,9 @@ func main() {
 	} else {
 		fmt.Printf("   Found %d subgroves:\n", len(subgroves))
 		for _, sg := range subgroves {
-			fmt.Printf("   - %s (%s)\n", sg.Name, sg.ID)
-			fmt.Printf("     Status: %s\n", sg.Status)
-			fmt.Printf("     Current block: %d\n", sg.CurrentBlock)
+			fmt.Printf("   - %s (%s)\n", sg.Name, sg.SubgroveID)
+			fmt.Printf("     Mode: %s\n", sg.Mode)
+			fmt.Printf("     Indexers: %d\n", sg.IndexerCount)
 		}
 		fmt.Println()
 	}
@@ -156,10 +156,9 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   Subgrove: %s\n", subgrove.ID)
-		fmt.Printf("   Network: %s\n", subgrove.Network)
-		fmt.Printf("   Start block: %d\n", subgrove.StartBlock)
-		fmt.Printf("   Current block: %d\n", subgrove.CurrentBlock)
+		fmt.Printf("   Subgrove: %s\n", subgrove.SubgroveID)
+		fmt.Printf("   Chain: %s\n", subgrove.Chain)
+		fmt.Printf("   Latest indexed block: %d\n", subgrove.LatestBlock)
 		fmt.Printf("   Status: %s\n", subgrove.Status)
 	}
 
@@ -176,7 +175,7 @@ func main() {
 			fmt.Printf("   - %s\n", indexer.IndexerDID)
 			fmt.Printf("     Endpoint: %s\n", indexer.Endpoint)
 			fmt.Printf("     Query endpoint: %s\n", indexer.EffectiveQueryEndpoint())
-			fmt.Printf("     Stake: %d WILL\n", indexer.StakeAmount)
+			fmt.Printf("     Stake: %s (smallest unit)\n", indexer.StakeAmount)
 			fmt.Printf("     Status: %s\n", indexer.Status)
 			fmt.Printf("     Performance: %.1f\n", indexer.PerformanceScore)
 			fmt.Printf("     Subgroves: %v\n", indexer.Subgroves)

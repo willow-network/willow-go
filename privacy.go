@@ -9,113 +9,41 @@ import (
 )
 
 // CommitmentFrequency defines how often a provider must publish state root
-// commitments on-chain for a private subgrove.
-//
-// JSON serialization matches Rust serde output:
-//   - EveryUpdate   → "EveryUpdate"
-//   - EveryNBlocks  → {"EveryNBlocks": n}
-//   - EveryNSeconds → {"EveryNSeconds": n}
-//   - Never         → "Never"
-type CommitmentFrequency struct {
-	variant string
-	n       uint64
-}
+// commitments on-chain for a private subgrove (see consensus.CommitmentFrequency).
+type CommitmentFrequency = consensus.CommitmentFrequency
 
 // NewCommitmentFrequencyEveryUpdate returns a CommitmentFrequency that commits
 // after every write/block update (default, strongest freshness).
 func NewCommitmentFrequencyEveryUpdate() CommitmentFrequency {
-	return CommitmentFrequency{variant: "EveryUpdate"}
+	return consensus.NewCommitmentFrequencyEveryUpdate()
 }
 
 // NewCommitmentFrequencyNever returns a CommitmentFrequency that disables
 // on-chain commitments.
 func NewCommitmentFrequencyNever() CommitmentFrequency {
-	return CommitmentFrequency{variant: "Never"}
+	return consensus.NewCommitmentFrequencyNever()
 }
 
 // NewCommitmentFrequencyEveryNBlocks returns a CommitmentFrequency that commits
 // every n blocks processed.
 func NewCommitmentFrequencyEveryNBlocks(n uint64) CommitmentFrequency {
-	return CommitmentFrequency{variant: "EveryNBlocks", n: n}
+	return consensus.NewCommitmentFrequencyEveryNBlocks(n)
 }
 
 // NewCommitmentFrequencyEveryNSeconds returns a CommitmentFrequency that commits
 // at least every n seconds.
 func NewCommitmentFrequencyEveryNSeconds(n uint64) CommitmentFrequency {
-	return CommitmentFrequency{variant: "EveryNSeconds", n: n}
+	return consensus.NewCommitmentFrequencyEveryNSeconds(n)
 }
 
-// MarshalJSON implements json.Marshaler, producing JSON matching the Rust serde format.
-func (cf CommitmentFrequency) MarshalJSON() ([]byte, error) {
-	switch cf.variant {
-	case "EveryUpdate", "Never":
-		return json.Marshal(cf.variant)
-	case "EveryNBlocks":
-		return json.Marshal(map[string]uint64{"EveryNBlocks": cf.n})
-	case "EveryNSeconds":
-		return json.Marshal(map[string]uint64{"EveryNSeconds": cf.n})
-	default:
-		return json.Marshal("EveryUpdate")
-	}
-}
-
-// UnmarshalJSON implements json.Unmarshaler, parsing JSON in the Rust serde format.
-func (cf *CommitmentFrequency) UnmarshalJSON(data []byte) error {
-	// Try as a plain string first ("EveryUpdate" or "Never").
-	var s string
-	if err := json.Unmarshal(data, &s); err == nil {
-		switch s {
-		case "EveryUpdate", "Never":
-			cf.variant = s
-			cf.n = 0
-			return nil
-		default:
-			return fmt.Errorf("unknown CommitmentFrequency variant: %q", s)
-		}
-	}
-
-	// Try as an object ({"EveryNBlocks": n} or {"EveryNSeconds": n}).
-	var obj map[string]uint64
-	if err := json.Unmarshal(data, &obj); err != nil {
-		return fmt.Errorf("invalid CommitmentFrequency JSON: %s", string(data))
-	}
-
-	if n, ok := obj["EveryNBlocks"]; ok {
-		cf.variant = "EveryNBlocks"
-		cf.n = n
-		return nil
-	}
-	if n, ok := obj["EveryNSeconds"]; ok {
-		cf.variant = "EveryNSeconds"
-		cf.n = n
-		return nil
-	}
-
-	return fmt.Errorf("unknown CommitmentFrequency object: %s", string(data))
-}
-
-// PrivacyConfig contains privacy configuration for a private subgrove.
-type PrivacyConfig struct {
-	// AllowedIndexers is an optional whitelist of indexer DIDs allowed to index
-	// this subgrove. When empty, any indexer may participate.
-	AllowedIndexers []string `json:"allowed_indexers,omitempty"`
-	// CommitmentFrequency controls how often the provider must publish state
-	// root commitments on-chain.
-	CommitmentFrequency CommitmentFrequency `json:"commitment_frequency"`
-}
+// PrivacyConfig contains privacy configuration for a private subgrove (see
+// consensus.PrivacyConfig).
+type PrivacyConfig = consensus.PrivacyConfig
 
 // EncryptedKeyGrant represents an encrypted key grant for a subgrove,
-// allowing a specific DID to decrypt the subgrove's data.
-type EncryptedKeyGrant struct {
-	GranteeDID         string `json:"grantee_did"`
-	KeyEpoch           uint32 `json:"key_epoch"`
-	GranteePublicKeyID string `json:"grantee_public_key_id"`
-	// Byte fields are JSON arrays of numbers, as the chain's types encode them.
-	EphemeralPublicKey consensus.ByteArray `json:"ephemeral_public_key"`
-	EncryptedKey       consensus.ByteArray `json:"encrypted_key"`
-	GrantedBy          string              `json:"granted_by"`
-	GrantedAt          uint64              `json:"granted_at"`
-}
+// allowing a specific DID to decrypt the subgrove's data (see
+// consensus.EncryptedKeyGrant).
+type EncryptedKeyGrant = consensus.EncryptedKeyGrant
 
 // PrivacyOperations provides methods for managing private subgroves,
 // including key grant management and key rotation.
@@ -132,17 +60,14 @@ func (p *PrivacyOperations) GetMyKeyGrant(ctx context.Context, subgroveID string
 
 	identity := p.client.GetIdentity()
 	path := fmt.Sprintf("/key-grants/%s/%s", subgroveID, identity.DID())
-	// The API answers { success, data: grant }.
-	var envelope struct {
-		Data *EncryptedKeyGrant `json:"data"`
-	}
-	if err := p.client.get(ctx, path, &envelope); err != nil {
+	var grant *EncryptedKeyGrant
+	if err := p.client.getData(ctx, path, &grant); err != nil {
 		return nil, err
 	}
-	if envelope.Data == nil {
+	if grant == nil {
 		return nil, NewNotFoundError("key grant")
 	}
-	return envelope.Data, nil
+	return grant, nil
 }
 
 // ListKeyGrantees retrieves the list of DIDs that have been granted access
@@ -153,22 +78,19 @@ func (p *PrivacyOperations) ListKeyGrantees(ctx context.Context, subgroveID stri
 	}
 
 	path := fmt.Sprintf("/key-grants/%s", subgroveID)
-	// The API answers { success, data: [did, ...] }.
-	var envelope struct {
-		Data []string `json:"data"`
-	}
-	if err := p.client.get(ctx, path, &envelope); err != nil {
+	var grantees []string
+	if err := p.client.getData(ctx, path, &grantees); err != nil {
 		return nil, err
 	}
-	return envelope.Data, nil
+	return grantees, nil
 }
 
-// GetKeyGrantProof retrieves the GroveDB Merkle proof for a key grant.
-// This is a public endpoint since proofs are non-sensitive.
+// GetKeyGrantProof retrieves the GroveDB Merkle proof for a key grant: the
+// data of the API's answer, {"proof": <hex>, "subgrove_id": ..., "grantee_did": ...}.
 func (p *PrivacyOperations) GetKeyGrantProof(ctx context.Context, subgroveID, did string) (json.RawMessage, error) {
 	path := fmt.Sprintf("/proof/key-grant/%s/%s", subgroveID, did)
 	var proof json.RawMessage
-	if err := p.client.get(ctx, path, &proof); err != nil {
+	if err := p.client.getData(ctx, path, &proof); err != nil {
 		return nil, err
 	}
 	return proof, nil
@@ -185,7 +107,9 @@ type grantSubgroveKeyRequest struct {
 }
 
 // GrantSubgroveKey broadcasts a GrantSubgroveKey transaction, granting the
-// specified DID access to the subgrove's encryption key.
+// specified DID access to the subgrove's encryption key. It is signed over
+// FormatGrantSubgroveKeyMessage, which binds every field of the grant and the
+// transaction's nonce.
 func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant) error {
 	if err := p.client.RequireAuth(); err != nil {
 		return err
@@ -198,8 +122,10 @@ func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID str
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
-	message := fmt.Sprintf("GrantSubgroveKey:%s:%s:%s:%d",
-		subgroveID, grant.GranteeDID, identity.DID(), nonce)
+	message, err := FormatGrantSubgroveKeyMessage(subgroveID, identity.DID(), grant, nonce)
+	if err != nil {
+		return err
+	}
 
 	signature, err := identity.Sign([]byte(message))
 	if err != nil {
@@ -283,21 +209,29 @@ type rotateSubgroveKeyRequest struct {
 
 // RotateSubgroveKey broadcasts a RotateSubgroveKey transaction, rotating the
 // subgrove encryption key to a new epoch and re-granting access to the
-// specified DIDs with newly encrypted keys.
+// specified DIDs with newly encrypted keys. It is signed over
+// FormatRotateSubgroveKeyMessage, which binds every grant, their order and
+// count, and the transaction's nonce.
 func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) error {
 	if err := p.client.RequireAuth(); err != nil {
 		return err
 	}
 
 	identity := p.client.GetIdentity()
+	if newGrants == nil {
+		// Sent as an empty list: the chain reads new_grants as a list.
+		newGrants = []EncryptedKeyGrant{}
+	}
 
 	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
 	if err != nil {
 		return fmt.Errorf("failed to get nonce: %w", err)
 	}
 
-	message := fmt.Sprintf("RotateSubgroveKey:%s:%d:%s:%d",
-		subgroveID, newEpoch, identity.DID(), nonce)
+	message, err := FormatRotateSubgroveKeyMessage(subgroveID, identity.DID(), newEpoch, newGrants, nonce)
+	if err != nil {
+		return err
+	}
 
 	signature, err := identity.Sign([]byte(message))
 	if err != nil {

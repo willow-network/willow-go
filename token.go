@@ -14,7 +14,7 @@ type TokenOperations struct {
 // GetInfo retrieves information about the WILL token.
 func (t *TokenOperations) GetInfo(ctx context.Context) (*TokenInfo, error) {
 	var info TokenInfo
-	err := t.client.get(ctx, "/token/info", &info)
+	err := t.client.getData(ctx, "/token/info", &info)
 	if err != nil {
 		return nil, err
 	}
@@ -24,7 +24,7 @@ func (t *TokenOperations) GetInfo(ctx context.Context) (*TokenInfo, error) {
 // GetBalance retrieves the balance for a DID.
 func (t *TokenOperations) GetBalance(ctx context.Context, did string) (*BalanceInfo, error) {
 	var info BalanceInfo
-	err := t.client.get(ctx, fmt.Sprintf("/token/balance/%s", did), &info)
+	err := t.client.getData(ctx, fmt.Sprintf("/token/balance/%s", did), &info)
 	if err != nil {
 		return nil, err
 	}
@@ -44,17 +44,17 @@ func (t *TokenOperations) GetMyBalance(ctx context.Context) (*BalanceInfo, error
 // GetFeeSchedule retrieves the current fee schedule.
 func (t *TokenOperations) GetFeeSchedule(ctx context.Context) (*FeeSchedule, error) {
 	var schedule FeeSchedule
-	if err := t.client.get(ctx, "/fees/schedule", &schedule); err != nil {
+	if err := t.client.getData(ctx, "/fees/schedule", &schedule); err != nil {
 		return nil, err
 	}
 	return &schedule, nil
 }
 
 // EstimateStorageFee estimates the storage fee (in WILL base units) for the
-// given data size: cost_per_byte * dataSizeBytes. cost_per_byte is returned
-// by the API as a decimal string because the value can exceed uint64, so
-// the multiplication runs through math/big and the result is returned as
-// a decimal string in the same convention.
+// given data size: cost_per_byte * dataSizeBytes. cost_per_byte is a u128,
+// held as a decimal string because the value can exceed uint64, so the
+// multiplication runs through math/big and the result is returned as a
+// decimal string in the same convention.
 func (t *TokenOperations) EstimateStorageFee(ctx context.Context, dataSizeBytes uint64) (string, error) {
 	schedule, err := t.GetFeeSchedule(ctx)
 	if err != nil {

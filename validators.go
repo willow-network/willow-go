@@ -3,6 +3,9 @@ package willow
 import (
 	"context"
 	"fmt"
+	"math/big"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 // ValidatorOperations provides methods for validator-related queries.
@@ -10,27 +13,28 @@ type ValidatorOperations struct {
 	client *Client
 }
 
-// List retrieves all validators.
+// List retrieves the active validators (the API's /validators lists only
+// active, unjailed validators with at least the minimum stake).
 func (v *ValidatorOperations) List(ctx context.Context) ([]ValidatorInfo, error) {
 	var validators []ValidatorInfo
-	err := v.client.get(ctx, "/validators", &validators)
+	err := v.client.getData(ctx, "/validators", &validators)
 	if err != nil {
 		return nil, err
 	}
 	return validators, nil
 }
 
-// Get retrieves information about a specific validator.
-func (v *ValidatorOperations) Get(ctx context.Context, address string) (*ValidatorInfo, error) {
+// Get retrieves a validator by its DID.
+func (v *ValidatorOperations) Get(ctx context.Context, did string) (*ValidatorInfo, error) {
 	var validator ValidatorInfo
-	err := v.client.get(ctx, fmt.Sprintf("/validators/%s", address), &validator)
+	err := v.client.getData(ctx, fmt.Sprintf("/validators/%s", did), &validator)
 	if err != nil {
 		return nil, err
 	}
 	return &validator, nil
 }
 
-// GetActive retrieves all active validators.
+// GetActive retrieves the validators that are active and not jailed.
 func (v *ValidatorOperations) GetActive(ctx context.Context) ([]ValidatorInfo, error) {
 	validators, err := v.List(ctx)
 	if err != nil {
@@ -39,25 +43,24 @@ func (v *ValidatorOperations) GetActive(ctx context.Context) ([]ValidatorInfo, e
 
 	active := make([]ValidatorInfo, 0)
 	for _, val := range validators {
-		if val.Status == ValidatorStatusActive {
+		if val.Status() == ValidatorStatusActive {
 			active = append(active, val)
 		}
 	}
 	return active, nil
 }
 
-// GetTotalVotingPower returns the total voting power of all validators.
-func (v *ValidatorOperations) GetTotalVotingPower(ctx context.Context) (int64, error) {
-	validators, err := v.List(ctx)
+// GetTotalStake returns the total stake of the active validators, in the
+// smallest token unit.
+func (v *ValidatorOperations) GetTotalStake(ctx context.Context) (consensus.Uint128, error) {
+	validators, err := v.GetActive(ctx)
 	if err != nil {
-		return 0, err
+		return consensus.Uint128{}, err
 	}
 
-	var total int64
+	total := new(big.Int)
 	for _, val := range validators {
-		if val.Status == ValidatorStatusActive {
-			total += val.VotingPower
-		}
+		total.Add(total, val.TotalStake.Big())
 	}
-	return total, nil
+	return consensus.Uint128FromBig(total)
 }

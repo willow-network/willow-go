@@ -463,12 +463,6 @@ func (i *Identity) signRequestMessage(message string) (string, error) {
 	return hex.EncodeToString(signature), nil
 }
 
-// FormatRegisterSubgroveMessage formats the message to sign for subgrove registration.
-func FormatRegisterSubgroveMessage(req *RegisterSubgroveRequest, nonce uint64) string {
-	return fmt.Sprintf("RegisterSubgrove\nSubgrove ID: %s\nName: %s\nOwner: %s\nNonce: %d",
-		req.SubgroveID, req.Name, req.OwnerDid, nonce)
-}
-
 // FormatTransferMessage formats the message to sign for a transfer.
 func FormatTransferMessage(req *TransferRequest, nonce uint64) string {
 	return fmt.Sprintf("Transfer\nFrom: %s\nTo: %s\nAmount: %d\nMemo: %s\nNonce: %d",

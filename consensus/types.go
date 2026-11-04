@@ -90,12 +90,56 @@ type RegisterDidTx struct {
 	Nonce       uint64      `json:"nonce"`
 }
 
-// SubgroveDataStorage holds configuration for DataStorage mode.
+// ReadPricing is a subgrove's pricing for paid reads.
+type ReadPricing struct {
+	Enabled bool `json:"enabled"`
+	// PricePerQuery is in the smallest token unit (10^-18 WILL).
+	PricePerQuery Uint128 `json:"price_per_query"`
+	// OwnerRevenueShareBps is the owner's share of revenue in basis points
+	// (0-10000); the rest goes to the protocol treasury.
+	OwnerRevenueShareBps uint32 `json:"owner_revenue_share_bps"`
+}
+
+// SubgroveDataStorage holds configuration for DataStorage mode. Nil slices are
+// sent as empty lists, and a nil ReadPricing as null (no paid reads).
 type SubgroveDataStorage struct {
-	Name                  string   `json:"name"`
-	Writers               []string `json:"writers,omitempty"`
-	FreeReaders           []string `json:"free_readers,omitempty"`
-	ReadPricing           any      `json:"read_pricing,omitempty"`
+	Name        string       `json:"name"`
+	Writers     []string     `json:"writers"`
+	FreeReaders []string     `json:"free_readers"`
+	ReadPricing *ReadPricing `json:"read_pricing"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists.
+func (m SubgroveDataStorage) MarshalJSON() ([]byte, error) {
+	type plain SubgroveDataStorage
+	p := plain(m)
+	p.Writers = orEmpty(p.Writers)
+	p.FreeReaders = orEmpty(p.FreeReaders)
+	return json.Marshal(p)
+}
+
+// SubgroveFileStorage holds configuration for FileStorage mode. Nil slices are
+// sent as empty lists, and a nil ReadPricing as null (no paid downloads).
+type SubgroveFileStorage struct {
+	Name string `json:"name"`
+	// MaxFileSize is the largest file the subgrove accepts, in bytes.
+	MaxFileSize uint64 `json:"max_file_size"`
+	// ReplicationFactor is the least number of storage nodes holding each file.
+	ReplicationFactor uint8        `json:"replication_factor"`
+	Writers           []string     `json:"writers"`
+	FreeReaders       []string     `json:"free_readers"`
+	ReadPricing       *ReadPricing `json:"read_pricing"`
+	// RetentionPeriod is in seconds; 0 keeps files permanently.
+	RetentionPeriod uint64 `json:"retention_period"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists.
+func (m SubgroveFileStorage) MarshalJSON() ([]byte, error) {
+	type plain SubgroveFileStorage
+	p := plain(m)
+	p.Writers = orEmpty(p.Writers)
+	p.FreeReaders = orEmpty(p.FreeReaders)
+	return json.Marshal(p)
 }
 
 // RetentionWindow specifies how long real-time indexed data is retained on consensus nodes.
@@ -105,6 +149,9 @@ type RetentionWindow struct {
 }
 
 // SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
+//
+// Its fields don't encode the chain's indexing mode, so FormatRegisterSubgroveMessage
+// refuses a registration in this mode.
 type SubgroveBlockchainIndexing struct {
 	ManifestContent []byte           `json:"manifest_content,omitempty"`
 	WasmModules     []any            `json:"wasm_modules,omitempty"`
@@ -113,22 +160,81 @@ type SubgroveBlockchainIndexing struct {
 	RetentionWindow *RetentionWindow `json:"retention_window,omitempty"`
 }
 
-// SubgroveMode represents the mode of a subgrove: DataStorage or BlockchainIndexing.
-// Exactly one field should be non-nil.
+// SubgroveMode represents the mode of a subgrove: DataStorage, FileStorage, or
+// BlockchainIndexing. Exactly one field should be non-nil.
 type SubgroveMode struct {
 	DataStorage        *SubgroveDataStorage        `json:"DataStorage,omitempty"`
-	BlockchainIndexing *SubgroveBlockchainIndexing  `json:"BlockchainIndexing,omitempty"`
+	FileStorage        *SubgroveFileStorage        `json:"FileStorage,omitempty"`
+	BlockchainIndexing *SubgroveBlockchainIndexing `json:"BlockchainIndexing,omitempty"`
 }
 
-// RegisterSubgroveTx represents a subgrove registration transaction.
+// TeeType is a trusted execution environment a subgrove can require of
+// checkpoint submissions.
+type TeeType string
+
+// The TEE types the chain knows.
+const (
+	TeeAwsNitro TeeType = "AwsNitro"
+	TeeIntelSgx TeeType = "IntelSgx"
+	TeeAmdSev   TeeType = "AmdSev"
+)
+
+// CheckpointVerificationConfig is a subgrove's checkpoint verification
+// configuration.
+type CheckpointVerificationConfig struct {
+	// RequiredTEE, when set, requires checkpoint submissions to carry an
+	// attestation from this TEE type.
+	RequiredTEE *TeeType `json:"required_tee"`
+}
+
+// RegisterSubgroveTx represents a subgrove registration transaction, sent as
+// {"RegisterSubgrove": tx}. Every field is sent, so the chain decodes exactly
+// the values the signature covers: nil slices go as empty lists and nil
+// optional fields as null.
+//
+// It is signed over FormatRegisterSubgroveMessage (in the willow package),
+// whose Config line is the SHA-256 of RegisterSubgroveUnsignedBincode of the
+// JSON sent.
 type RegisterSubgroveTx struct {
-	SubgroveID  string        `json:"subgrove_id"`
-	Schema      string        `json:"schema"`
-	OwnerDid    string        `json:"owner_did"`
-	Mode        *SubgroveMode `json:"mode,omitempty"`
-	Signature   ByteArray        `json:"signature"`
-	PublicKeyID string        `json:"public_key_id"`
-	Nonce       uint64        `json:"nonce"`
+	SubgroveID  string `json:"subgrove_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Schema is the subgrove's document schema as JSON text, in the chain's
+	// form: {"version":1,"fields":{...},"indexes":[...],"required_fields":[...]}.
+	Schema   string   `json:"schema"`
+	OwnerDid string   `json:"owner_did"`
+	Admins   []string `json:"admins"`
+	// InitialFunding, when set, funds the subgrove in the same transaction (in
+	// the smallest token unit).
+	InitialFunding         *Uint128                     `json:"initial_funding"`
+	CheckpointVerification CheckpointVerificationConfig `json:"checkpoint_verification"`
+	Mode                   *SubgroveMode                `json:"mode"`
+	Privacy                *PrivacyConfig               `json:"privacy"`
+	InitialOwnerKeyGrant   *EncryptedKeyGrant           `json:"initial_owner_key_grant"`
+	// TemplateConfig is the chain's TemplateSubgroveConfig as JSON; nil sends null.
+	TemplateConfig json.RawMessage `json:"template_config"`
+	// ConfirmationDepth is the number of blocks held in the chain-tip buffer
+	// before submissions fire.
+	ConfirmationDepth         uint32    `json:"confirmation_depth"`
+	Signature                 ByteArray `json:"signature"`
+	PublicKeyID               string    `json:"public_key_id"`
+	Nonce                     uint64    `json:"nonce"`
+	CryptographicCompleteness bool      `json:"cryptographic_completeness"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists.
+func (tx RegisterSubgroveTx) MarshalJSON() ([]byte, error) {
+	type plain RegisterSubgroveTx
+	p := plain(tx)
+	p.Admins = orEmpty(p.Admins)
+	return json.Marshal(p)
+}
+
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // TransferTx represents a token transfer transaction.
@@ -142,15 +248,18 @@ type TransferTx struct {
 	Nonce       uint64 `json:"nonce"`
 }
 
-// DataStoreTx represents a data storage transaction.
+// DataStoreTx represents a data storage transaction, sent as {"StoreData": tx}.
 type DataStoreTx struct {
-	SubgroveID  string          `json:"subgrove_id"`
-	Key         string          `json:"key"`
-	Data        json.RawMessage `json:"data"`
-	OwnerDid    string          `json:"owner_did"`
-	Signature   ByteArray          `json:"signature"`
-	PublicKeyID string          `json:"public_key_id"`
-	Nonce       uint64          `json:"nonce"`
+	SubgroveID string `json:"subgrove_id"`
+	Key        string `json:"key"`
+	// Data is the JSON text of the stored object as UTF-8 bytes. The chain
+	// reads it as bytes, so it is sent as a JSON array of byte values, and the
+	// signed message hashes exactly these bytes.
+	Data        ByteArray `json:"data"`
+	OwnerDid    string    `json:"owner_did"`
+	Signature   ByteArray `json:"signature"`
+	PublicKeyID string    `json:"public_key_id"`
+	Nonce       uint64    `json:"nonce"`
 }
 
 // DataDeleteTx represents a data deletion transaction.

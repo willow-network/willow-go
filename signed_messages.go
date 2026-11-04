@@ -3,11 +3,16 @@ package willow
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
-// The messages data and file writes are signed over. Each is a set of lines
+// The messages data and file writes, subgrove registrations, key grants and
+// rotations, and storage-node removals are signed over. Each is a set of lines
 // joined by "\n" (the byte 0x0A, no trailing newline), UTF-8: the kind first,
 // then one "Label: value" line per field the transaction writes, the nonce
 // last. Text fields go in verbatim. Numbers are unsigned decimal and bytes
@@ -124,6 +129,129 @@ func FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID string, nonce
 		build()
 }
 
+// FormatRegisterSubgroveMessage returns the message a RegisterSubgrove
+// transaction is signed over:
+//
+//	RegisterSubgrove
+//	Subgrove: <SubgroveID>
+//	Owner: <OwnerDid>
+//	Config: <hex SHA-256 of the transaction's bincode with an empty signature>
+//	Nonce: <Nonce>
+//
+// Config binds every field of the transaction: it hashes
+// consensus.RegisterSubgroveUnsignedBincode of the JSON tx marshals to, which
+// is the JSON sent. Build the message from the transaction as it will be sent
+// (every field but the signature set, the nonce included), then set Signature.
+//
+// It refuses a BlockchainIndexing registration: consensus.SubgroveBlockchainIndexing
+// doesn't encode the chain's indexing mode, so this SDK signs DataStorage and
+// FileStorage registrations only.
+func FormatRegisterSubgroveMessage(tx *consensus.RegisterSubgroveTx) (string, error) {
+	if tx == nil {
+		return "", NewValidationError("no RegisterSubgrove transaction")
+	}
+	if tx.Mode == nil {
+		return "", NewValidationError("RegisterSubgrove needs a mode")
+	}
+	modes := 0
+	for _, set := range []bool{tx.Mode.DataStorage != nil, tx.Mode.FileStorage != nil, tx.Mode.BlockchainIndexing != nil} {
+		if set {
+			modes++
+		}
+	}
+	if modes != 1 {
+		return "", NewValidationError("RegisterSubgrove needs exactly one mode: DataStorage, FileStorage, or BlockchainIndexing")
+	}
+	if tx.Mode.BlockchainIndexing != nil {
+		return "", NewValidationError("this SDK can't encode a BlockchainIndexing registration, so it won't sign one; it signs DataStorage and FileStorage registrations")
+	}
+	body, err := json.Marshal(tx)
+	if err != nil {
+		return "", NewSerializationError("failed to encode the RegisterSubgrove transaction", err)
+	}
+	unsigned, err := consensus.RegisterSubgroveUnsignedBincode(body)
+	if err != nil {
+		return "", NewValidationError(err.Error())
+	}
+	config := sha256.Sum256(unsigned)
+	return newSignedMessage("RegisterSubgrove").
+		text("Subgrove", tx.SubgroveID).
+		text("Owner", tx.OwnerDid).
+		line("Config", hex.EncodeToString(config[:])).
+		line("Nonce", strconv.FormatUint(tx.Nonce, 10)).
+		build()
+}
+
+// FormatGrantSubgroveKeyMessage returns the message a GrantSubgroveKey
+// transaction is signed over:
+//
+//	GrantSubgroveKey
+//	Subgrove: <subgroveID>
+//	Sender: <senderDID>
+//	Grantee: <grant.GranteeDID>
+//	GranteeKey: <grant.GranteePublicKeyID>
+//	KeyEpoch: <grant.KeyEpoch>
+//	EphemeralKey: <hex grant.EphemeralPublicKey>
+//	EncryptedKey: <hex grant.EncryptedKey>
+//	GrantedBy: <grant.GrantedBy>
+//	GrantedAt: <grant.GrantedAt>
+//	Nonce: <nonce>
+func FormatGrantSubgroveKeyMessage(subgroveID, senderDID string, grant EncryptedKeyGrant, nonce uint64) (string, error) {
+	return newSignedMessage("GrantSubgroveKey").
+		text("Subgrove", subgroveID).
+		text("Sender", senderDID).
+		grant(grant).
+		line("Nonce", strconv.FormatUint(nonce, 10)).
+		build()
+}
+
+// FormatRotateSubgroveKeyMessage returns the message a RotateSubgroveKey
+// transaction is signed over:
+//
+//	RotateSubgroveKey
+//	Subgrove: <subgroveID>
+//	Sender: <senderDID>
+//	NewEpoch: <newEpoch>
+//	Grants: <len(grants)>
+//	<for each grant, in order, its seven lines Grantee … GrantedAt, as in
+//	FormatGrantSubgroveKeyMessage>
+//	Nonce: <nonce>
+func FormatRotateSubgroveKeyMessage(subgroveID, senderDID string, newEpoch uint32, grants []EncryptedKeyGrant, nonce uint64) (string, error) {
+	m := newSignedMessage("RotateSubgroveKey").
+		text("Subgrove", subgroveID).
+		text("Sender", senderDID).
+		line("NewEpoch", strconv.FormatUint(uint64(newEpoch), 10)).
+		line("Grants", strconv.Itoa(len(grants)))
+	for _, g := range grants {
+		m.grant(g)
+	}
+	return m.line("Nonce", strconv.FormatUint(nonce, 10)).build()
+}
+
+// FormatUnregisterStorageNodeMessage returns the message an
+// UnregisterStorageNode transaction is signed over:
+//
+//	UnregisterStorageNode
+//	Node: <nodeDID>
+//	Nonce: <nonce>
+func FormatUnregisterStorageNodeMessage(nodeDID string, nonce uint64) (string, error) {
+	return newSignedMessage("UnregisterStorageNode").
+		text("Node", nodeDID).
+		line("Nonce", strconv.FormatUint(nonce, 10)).
+		build()
+}
+
+// grant adds a key grant's seven lines.
+func (m *signedMessage) grant(g EncryptedKeyGrant) *signedMessage {
+	return m.text("Grantee", g.GranteeDID).
+		text("GranteeKey", g.GranteePublicKeyID).
+		line("KeyEpoch", strconv.FormatUint(uint64(g.KeyEpoch), 10)).
+		line("EphemeralKey", hex.EncodeToString(g.EphemeralPublicKey)).
+		line("EncryptedKey", hex.EncodeToString(g.EncryptedKey)).
+		text("GrantedBy", g.GrantedBy).
+		line("GrantedAt", strconv.FormatUint(g.GrantedAt, 10))
+}
+
 // signedMessage collects a message's lines and the first field refused.
 type signedMessage struct {
 	lines []string
@@ -135,10 +263,15 @@ func newSignedMessage(kind string) *signedMessage {
 }
 
 // text adds a text field, refusing one that holds a line break (the byte
-// 0x0A, which is also the second byte of "\r\n").
+// 0x0A, which is also the second byte of "\r\n") or isn't valid UTF-8 (the
+// transaction's JSON would carry U+FFFD in its place, so the chain would
+// rebuild another message).
 func (m *signedMessage) text(label, value string) *signedMessage {
 	if m.err == nil && strings.ContainsRune(value, '\n') {
 		m.err = NewValidationError(label + " holds a line break, which a signed field can't")
+	}
+	if m.err == nil && !utf8.ValidString(value) {
+		m.err = NewValidationError(label + " is not valid UTF-8")
 	}
 	return m.line(label, value)
 }

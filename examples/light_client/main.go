@@ -82,7 +82,6 @@ func main() {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
 
-	client.RegisterDID(ctx, identity.DidDocument)
 	client.SetIdentity(identity)
 	fmt.Printf("   Identity set for: %s\n", identity.DID())
 
@@ -101,20 +100,24 @@ func main() {
 		fmt.Println("   Data stored")
 	}
 
-	// 6. Retrieve with full trustless verification
-	fmt.Println("\n6. Retrieving data with trustless verification...")
-	fmt.Println("   This verifies:")
-	fmt.Println("   - 2/3+ validator signatures on block headers")
-	fmt.Println("   - GroveDB Merkle proof against consensus app_hash")
-	fmt.Println("   - Data integrity without trusting any single node")
+	// 6. Retrieve the data, then its proof, and check the proof's root against
+	// the light client's trusted app hash
+	fmt.Println("\n6. Retrieving data and its proof...")
 
 	response, err := client.Data.Get(ctx, "secure-data", "entry-1")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Data retrieved and CRYPTOGRAPHICALLY VERIFIED:")
+		fmt.Println("   Data retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
+	}
+	if proof, err := client.Data.GetProof(ctx, "secure-data", "entry-1"); err != nil {
+		fmt.Printf("   Note: %v\n", err)
+	} else if err := client.Data.VerifyProof(ctx, proof); err != nil {
+		fmt.Printf("   Proof not verified: %v\n", err)
+	} else {
+		fmt.Println("   Proof root matches the light client's trusted app hash")
 	}
 
 	// 7. Query with verification

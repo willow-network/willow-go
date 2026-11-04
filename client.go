@@ -323,42 +323,43 @@ func (c *Client) GetComputedFields(datasetID string) (ComputedFieldSet, bool) {
 	return c.computedFields.Get(datasetID)
 }
 
-// RegisterDID registers a new DID document.
+// RegisterDID returns an unsupported-operation error and sends nothing.
+//
+// The API serves no DID registration route: a DID is registered on chain by a
+// RegisterDid transaction sent to POST /tx/submit, which this SDK does not
+// build.
 //
 // Willow DIDs are self-certifying: the id is derived from the public key (see
 // GenerateDID), not chosen. Because the fee for registration is paid from the
-// derived id's own balance, a new DID must be funded BEFORE it is registered:
-//
-//  1. Generate the identity locally (willow.NewIdentity) — no network call.
-//  2. Fund it: have an already-funded account submit a token transfer of at
-//     least the registration fee to identity.DID() (see FormatTransferMessage
-//     / TransferRequest). Confirm with client.Token.GetBalance(ctx, did).
-//  3. Register: client.RegisterDID(ctx, identity.DidDocument).
+// derived id's own balance, a new DID must be funded (a token transfer of at
+// least the registration fee to identity.DID()) before it is registered.
 func (c *Client) RegisterDID(ctx context.Context, didDocument *DidDocument) (*DidDocument, error) {
-	var result DidDocument
-	err := c.post(ctx, "/did", didDocument, &result)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return nil, NewUnsupportedError("RegisterDID: the API serves no DID registration route; a DID is registered by a RegisterDid transaction sent to POST /tx/submit, which this SDK does not build")
 }
 
-// GetDID retrieves information about a DID.
+// GetDID retrieves a DID's on-chain document. Its balance is read with
+// Token.GetBalance.
 func (c *Client) GetDID(ctx context.Context, did string) (*DidInfo, error) {
-	var info DidInfo
-	err := c.get(ctx, fmt.Sprintf("/did/%s", did), &info)
-	if err != nil {
+	var document *DidDocument
+	if err := c.getData(ctx, fmt.Sprintf("/did/%s", did), &document); err != nil {
 		return nil, err
 	}
-	return &info, nil
+	if document == nil {
+		return nil, &WillowError{Type: ErrorTypeNotFound, Message: "DID not found"}
+	}
+	return &DidInfo{Did: document.ID, Document: document, CreatedAt: document.Created}, nil
 }
 
-// Health checks the health of the node.
+// Health checks the health of the node. The API answers /health with the
+// status itself, not the success/data envelope.
 func (c *Client) Health(ctx context.Context) (*HealthStatus, error) {
 	var status HealthStatus
 	err := c.get(ctx, "/health", &status)
 	if err != nil {
 		return nil, err
+	}
+	if status.Status != "" {
+		status.Healthy = status.Status == "healthy"
 	}
 	return &status, nil
 }
@@ -368,7 +369,7 @@ func (c *Client) GetRootHash(ctx context.Context) (string, error) {
 	var result struct {
 		RootHash string `json:"root_hash"`
 	}
-	err := c.get(ctx, "/state/root-hash", &result)
+	err := c.getData(ctx, "/state/root-hash", &result)
 	if err != nil {
 		return "", err
 	}
@@ -381,7 +382,7 @@ func (c *Client) GetVerifiedRootHash(ctx context.Context) (string, error) {
 		RootHash string `json:"root_hash"`
 		Height   int64  `json:"height"`
 	}
-	err := c.get(ctx, "/state/root-hash/verified", &result)
+	err := c.getData(ctx, "/state/root-hash/verified", &result)
 	if err != nil {
 		return "", err
 	}
@@ -533,26 +534,69 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	return nil
 }
 
+// apiEnvelope is the body most API routes answer with:
+// {"success": bool, "data": <the result>, "error": <message or null>}.
+type apiEnvelope struct {
+	Success bool            `json:"success"`
+	Data    json.RawMessage `json:"data"`
+	Error   *string         `json:"error"`
+}
+
+// decode returns the API's error when it reports one, else decodes data into
+// result (a null or absent data leaves result as it is).
+func (env *apiEnvelope) decode(result interface{}) error {
+	if !env.Success || env.Error != nil {
+		message := "the API reported a failure without a message"
+		if env.Error != nil && *env.Error != "" {
+			message = *env.Error
+		}
+		if strings.Contains(strings.ToLower(message), "not found") {
+			return &WillowError{Type: ErrorTypeNotFound, Message: message}
+		}
+		return NewAPIError(message)
+	}
+	if result == nil || len(env.Data) == 0 || string(env.Data) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(env.Data, result); err != nil {
+		return NewSerializationError("failed to unmarshal response data", err)
+	}
+	return nil
+}
+
+// getData GETs an API route that answers with the envelope and decodes its
+// data into result.
+func (c *Client) getData(ctx context.Context, path string, result interface{}) error {
+	return c.requestData(ctx, http.MethodGet, path, nil, result)
+}
+
+// postData POSTs to an API route that answers with the envelope and decodes
+// its data into result.
+func (c *Client) postData(ctx context.Context, path string, body, result interface{}) error {
+	return c.requestData(ctx, http.MethodPost, path, body, result)
+}
+
+func (c *Client) requestData(ctx context.Context, method, path string, body, result interface{}) error {
+	var env apiEnvelope
+	if err := c.doRequest(ctx, method, path, body, &env); err != nil {
+		return err
+	}
+	return env.decode(result)
+}
+
 // nextTxNonce returns the nonce the DID's next transaction must carry: one past
 // the account nonce the API reports at /account/{did}/nonce.
 func (c *Client) nextTxNonce(ctx context.Context, did string) (uint64, error) {
-	var envelope struct {
-		Data *struct {
-			Nonce uint64 `json:"nonce"`
-		} `json:"data"`
-		Error *string `json:"error"`
+	var account *struct {
+		Nonce uint64 `json:"nonce"`
 	}
-	if err := c.get(ctx, fmt.Sprintf("/account/%s/nonce", did), &envelope); err != nil {
+	if err := c.getData(ctx, fmt.Sprintf("/account/%s/nonce", did), &account); err != nil {
 		return 0, err
 	}
-	if envelope.Data == nil {
-		message := "no nonce in /account response"
-		if envelope.Error != nil {
-			message = *envelope.Error
-		}
-		return 0, NewValidationError(message)
+	if account == nil {
+		return 0, NewValidationError("no nonce in /account response")
 	}
-	return envelope.Data.Nonce + 1, nil
+	return account.Nonce + 1, nil
 }
 
 // submitTx posts a JSON transaction to the API's /tx/submit, which hands it to
@@ -662,9 +706,11 @@ func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 	return nil
 }
 
-// carriesReadRights reports whether a request is a read of subgrove data, the
-// reads the API can gate by a DID's read rights: GET /data/{sg}/{key}, GET
-// /proof/{sg}/{key}, POST /query/{sg}, /sql/{sg}, /graphql/{sg}, and POST /a2a.
+// carriesReadRights reports whether a request is a read the API gates by the
+// DID a replay-protected signature proves: GET /data/{sg}/{key}, GET
+// /proof/{sg}/{key}, the key-grant reads (GET /key-grants/{sg},
+// /key-grants/{sg}/{did}, and /proof/key-grant/{sg}/{did}), POST /query/{sg},
+// /sql/{sg}, /graphql/{sg}, and POST /a2a.
 func carriesReadRights(method, target string) bool {
 	path := target
 	if q := strings.IndexByte(path, '?'); q >= 0 {
@@ -673,7 +719,15 @@ func carriesReadRights(method, target string) bool {
 	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch method {
 	case http.MethodGet:
-		return len(segments) == 3 && (segments[0] == "data" || segments[0] == "proof")
+		switch segments[0] {
+		case "data":
+			return len(segments) == 3
+		case "proof":
+			return len(segments) == 3 || (len(segments) == 4 && segments[1] == "key-grant")
+		case "key-grants":
+			return len(segments) == 2 || len(segments) == 3
+		}
+		return false
 	case http.MethodPost:
 		switch segments[0] {
 		case "query", "sql", "graphql":
@@ -764,7 +818,7 @@ func (c *Client) handleErrorResponse(statusCode int, body []byte) error {
 		case http.StatusForbidden:
 			return NewPermissionDeniedError(message)
 		case http.StatusNotFound:
-			return NewNotFoundError(message)
+			return &WillowError{Type: ErrorTypeNotFound, Message: message}
 		case http.StatusBadRequest:
 			return NewValidationError(message)
 		default:

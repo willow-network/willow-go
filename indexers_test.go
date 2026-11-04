@@ -6,13 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 func info(did string, subgroves []string, perf float64, status string) IndexerInfo {
 	return IndexerInfo{
 		IndexerDID:       did,
 		Subgroves:        subgroves,
-		StakeAmount:      100,
+		StakeAmount:      consensus.NewUint128(100),
 		Endpoint:         "http://" + did + ":9090",
 		QueryEndpoint:    "http://" + did + ":3032",
 		Status:           status,

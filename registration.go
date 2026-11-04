@@ -3,6 +3,8 @@ package willow
 import (
 	"context"
 	"fmt"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 // RegistrationOperations provides methods for subgrove registration.
@@ -10,26 +12,90 @@ type RegistrationOperations struct {
 	client *Client
 }
 
-// RegisterSubgrove registers a new subgrove.
+// RegisterSubgrove registers a DataStorage subgrove owned by the client's
+// identity, by sending a signed RegisterSubgrove transaction to POST
+// /tx/submit.
+//
+// The transaction carries req's SubgroveID, Name, and Description, its Schema
+// in the chain's form (SchemaDefinition.ChainSchemaJSON), and a DataStorage
+// mode named Name whose writers are Writers and whose free readers are
+// Readers. Every other field is sent with its default: no admins, funding,
+// TEE requirement, read pricing, privacy, or template. It is signed over
+// FormatRegisterSubgroveMessage, which binds all of them and the nonce, one
+// past the identity's account nonce. For another mode or those fields, build a
+// consensus.RegisterSubgroveTx, sign FormatRegisterSubgroveMessage, and send it
+// with consensus.Client.BroadcastTxSync.
+//
+// OwnerDid, when set, must be the identity's DID, and RewardRate must be 0: a
+// DataStorage registration has no reward rate. The registration returned is
+// req as sent; the subgrove exists once the transaction's block commits.
 func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*SubgroveRegistration, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
-
-	var result SubgroveRegistration
-	err := r.client.post(ctx, "/subgroves", req, &result)
+	if req == nil {
+		return nil, NewValidationError("RegisterSubgrove: no request")
+	}
+	identity := r.client.GetIdentity()
+	if req.OwnerDid != "" && req.OwnerDid != identity.DID() {
+		return nil, NewValidationError("RegisterSubgrove: the owner signs the registration, so OwnerDid must be the identity's DID")
+	}
+	if req.RewardRate != 0 {
+		return nil, NewValidationError("RegisterSubgrove: a DataStorage registration has no reward rate")
+	}
+	schema, err := req.Schema.ChainSchemaJSON()
 	if err != nil {
 		return nil, err
 	}
 
-	return &result, nil
+	nonce, err := r.client.nextTxNonce(ctx, identity.DID())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get nonce: %w", err)
+	}
+	tx := &consensus.RegisterSubgroveTx{
+		SubgroveID:  req.SubgroveID,
+		Name:        req.Name,
+		Description: req.Description,
+		Schema:      schema,
+		OwnerDid:    identity.DID(),
+		Mode: &consensus.SubgroveMode{DataStorage: &consensus.SubgroveDataStorage{
+			Name:        req.Name,
+			Writers:     req.Writers,
+			FreeReaders: req.Readers,
+		}},
+		PublicKeyID: identity.PublicKeyID(),
+		Nonce:       nonce,
+	}
+	message, err := FormatRegisterSubgroveMessage(tx)
+	if err != nil {
+		return nil, err
+	}
+	if tx.Signature, err = identity.Sign([]byte(message)); err != nil {
+		return nil, err
+	}
+	if err := r.client.submitTx(ctx, map[string]interface{}{"RegisterSubgrove": tx}); err != nil {
+		return nil, err
+	}
+
+	return &SubgroveRegistration{
+		SubgroveID:  req.SubgroveID,
+		Name:        req.Name,
+		Description: req.Description,
+		Schema:      req.Schema,
+		OwnerDid:    identity.DID(),
+		Writers:     req.Writers,
+		Readers:     req.Readers,
+	}, nil
 }
 
-// GetSubgrove retrieves information about a subgrove.
+// GetSubgrove retrieves information about a subgrove. The API's
+// /subgroves/{id} answers with the subgrove's id, name, and owner (and its
+// status), so only those fields are set; ListSubgroves carries whole
+// registrations, with the schema, writers, and free readers.
 func (r *RegistrationOperations) GetSubgrove(ctx context.Context, subgroveID string) (*SubgroveRegistration, error) {
 	var result SubgroveRegistration
 	path := fmt.Sprintf("/subgroves/%s", subgroveID)
-	err := r.client.get(ctx, path, &result)
+	err := r.client.getData(ctx, path, &result)
 	if err != nil {
 		return nil, err
 	}
@@ -39,67 +105,71 @@ func (r *RegistrationOperations) GetSubgrove(ctx context.Context, subgroveID str
 // ListSubgroves lists all subgroves.
 func (r *RegistrationOperations) ListSubgroves(ctx context.Context) ([]SubgroveRegistration, error) {
 	var results []SubgroveRegistration
-	err := r.client.get(ctx, "/subgroves", &results)
+	err := r.client.getData(ctx, "/subgroves", &results)
 	if err != nil {
 		return nil, err
 	}
 	return results, nil
 }
 
-// UpdateSubgrove updates an existing subgrove.
+// UpdateSubgrove returns an unsupported-operation error and sends nothing: the
+// API serves no subgrove update route. A subgrove is changed by
+// UpdateSubgroveReadPricing, UpdateSubgroveFreeReaders, or ReplaceSubgrove
+// transactions sent to POST /tx/submit, which this SDK does not build.
 func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, subgroveID string, updates map[string]interface{}) (*SubgroveRegistration, error) {
-	if err := r.client.RequireAuth(); err != nil {
-		return nil, err
-	}
-
-	var result SubgroveRegistration
-	path := fmt.Sprintf("/subgroves/%s", subgroveID)
-	err := r.client.put(ctx, path, updates, &result)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return nil, NewUnsupportedError("UpdateSubgrove: the API serves no subgrove update route; a subgrove is changed by UpdateSubgroveReadPricing, UpdateSubgroveFreeReaders, or ReplaceSubgrove transactions sent to POST /tx/submit, which this SDK does not build")
 }
 
-// DeleteSubgrove deletes a subgrove.
+// DeleteSubgrove deregisters a subgrove owned by the client's identity by
+// sending a signed DeregisterSubgrove transaction to POST /tx/submit (see
+// consensus.DeregisterSubgroveSignMessage); the chain refunds its remaining
+// balance to the owner.
 func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string) error {
 	if err := r.client.RequireAuth(); err != nil {
 		return err
 	}
-
-	path := fmt.Sprintf("/subgroves/%s", subgroveID)
-	return r.client.delete(ctx, path, nil)
+	identity := r.client.GetIdentity()
+	nonce, err := r.client.nextTxNonce(ctx, identity.DID())
+	if err != nil {
+		return fmt.Errorf("failed to get nonce: %w", err)
+	}
+	signature, err := identity.Sign([]byte(consensus.DeregisterSubgroveSignMessage(subgroveID, identity.DID(), nonce)))
+	if err != nil {
+		return err
+	}
+	return r.client.submitTx(ctx, map[string]interface{}{
+		"DeregisterSubgrove": consensus.DeregisterSubgroveTx{
+			SubgroveID:  subgroveID,
+			OwnerDid:    identity.DID(),
+			Signature:   signature,
+			PublicKeyID: identity.PublicKeyID(),
+			Nonce:       nonce,
+		},
+	})
 }
 
 // GetPermissions retrieves permissions for a DID.
 func (r *RegistrationOperations) GetPermissions(ctx context.Context, did string) ([]Permission, error) {
-	// The API answers { success, data: [...] }.
-	var envelope struct {
-		Data []Permission `json:"data"`
-	}
-	if err := r.client.get(ctx, fmt.Sprintf("/did/%s/permissions", did), &envelope); err != nil {
+	var permissions []Permission
+	if err := r.client.getData(ctx, fmt.Sprintf("/did/%s/permissions", did), &permissions); err != nil {
 		return nil, err
 	}
-	return envelope.Data, nil
+	return permissions, nil
 }
 
-// GrantPermission grants a permission to a DID.
+// GrantPermission returns an unsupported-operation error and sends nothing:
+// the API serves no permission write route. A subgrove's permissions (its
+// owner, admins, writers, and readers) are written by its RegisterSubgrove
+// transaction (see RegisterSubgrove).
 func (r *RegistrationOperations) GrantPermission(ctx context.Context, permission *Permission) error {
-	if err := r.client.RequireAuth(); err != nil {
-		return err
-	}
-
-	return r.client.post(ctx, "/permissions", permission, nil)
+	return NewUnsupportedError("GrantPermission: the API serves no permission write route; a subgrove's permissions (owner, admins, writers, readers) are written by its RegisterSubgrove transaction")
 }
 
-// RevokePermission revokes a permission from a DID.
+// RevokePermission returns an unsupported-operation error and sends nothing:
+// the API serves no permission write route. A subgrove's permissions are
+// written by its RegisterSubgrove transaction (see RegisterSubgrove).
 func (r *RegistrationOperations) RevokePermission(ctx context.Context, did, subgroveID string) error {
-	if err := r.client.RequireAuth(); err != nil {
-		return err
-	}
-
-	path := fmt.Sprintf("/permissions/%s/%s", did, subgroveID)
-	return r.client.delete(ctx, path, nil)
+	return NewUnsupportedError("RevokePermission: the API serves no permission write route; a subgrove's permissions (owner, admins, writers, readers) are written by its RegisterSubgrove transaction")
 }
 
 // SubgroveBuilder provides a fluent interface for building subgrove registrations.

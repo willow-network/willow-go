@@ -1,12 +1,11 @@
 // Data operations example for the Willow Go SDK
 //
 // This example demonstrates:
-// - Storing single items
-// - Batch storing multiple items
-// - Updating data
-// - Deleting data
-// - Querying with filters
-// - Verified vs unverified operations
+// - Storing items, each a signed StoreData transaction
+// - Reading them back
+// - Querying with a filter
+// - The writes this SDK doesn't build (update, delete), which return an
+//   unsupported error naming the supported path
 //
 // Run with: go run ./examples/data_operations
 
@@ -17,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -39,7 +39,6 @@ func main() {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
 
-	client.RegisterDID(ctx, identity.DidDocument)
 	client.SetIdentity(identity)
 	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
@@ -58,11 +57,14 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Stored product-1")
+		fmt.Println("   Sent product-1")
+		waitForKey(ctx, client, subgroveID, "product-1")
 	}
 
-	// 2. Batch store multiple items
-	fmt.Println("\n2. Batch storing items...")
+	// 2. Store more items. The API has no batch write: each item is its own
+	// StoreData transaction, signed under the account's next nonce, so each is
+	// sent after the previous one has landed.
+	fmt.Println("\n2. Storing more items...")
 	items := []willow.StoreRequest{
 		{
 			Key: "product-2",
@@ -93,21 +95,23 @@ func main() {
 		},
 	}
 
-	err = client.Data.BatchStore(ctx, subgroveID, items)
-	if err != nil {
-		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Println("   Stored 3 products in batch")
+	for _, item := range items {
+		if err := client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data); err != nil {
+			fmt.Printf("   Note: %s: %v\n", item.Key, err)
+			continue
+		}
+		fmt.Printf("   Sent %s\n", item.Key)
+		waitForKey(ctx, client, subgroveID, item.Key)
 	}
 
-	// 3. Get with proof verification (secure by default)
-	fmt.Println("\n3. Get with proof verification...")
+	// 3. Get (the API's data route carries no proof; GetProof fetches one)
+	fmt.Println("\n3. Get...")
 	response, err := client.Data.Get(ctx, subgroveID, "product-1")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Retrieved and VERIFIED:")
+		fmt.Println("   Retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 
@@ -139,11 +143,10 @@ func main() {
 		fmt.Println("   Updated product-1")
 	}
 
-	// 6. Query with filters (verified)
-	fmt.Println("\n6. Query with filters (verified)...")
+	// 6. Query with a filter (the API's /query applies one equality filter)
+	fmt.Println("\n6. Query with a filter (verified)...")
 	query := willow.NewQueryBuilder().
 		Equals("category", "electronics").
-		Equals("in_stock", true).
 		Limit(10).
 		Build()
 
@@ -196,6 +199,17 @@ func main() {
 	}
 
 	fmt.Println("\nData operations example complete!")
+}
+
+// waitForKey polls for a stored key until its write has landed, or 30 s pass.
+func waitForKey(ctx context.Context, client *willow.Client, subgroveID, key string) {
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(time.Second) {
+		if _, err := client.Data.GetUnverified(ctx, subgroveID, key); err == nil {
+			fmt.Printf("   %s landed\n", key)
+			return
+		}
+	}
+	fmt.Printf("   %s has not landed after 30 s\n", key)
 }
 
 func truncate(s string, maxLen int) string {

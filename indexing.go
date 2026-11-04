@@ -71,6 +71,8 @@ func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *
 }
 
 // QueryUnverified executes a GraphQL query without proof verification (faster).
+// The API answers GraphQL with the GraphQL response itself, not the
+// success/data envelope.
 func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	req.IncludeProof = BoolPtr(false)
 
@@ -364,7 +366,7 @@ func (i *IndexingOperations) ExecuteWithResult(ctx context.Context, subgroveID, 
 // ListSubgroves retrieves all available subgroves.
 func (i *IndexingOperations) ListSubgroves(ctx context.Context) ([]SubgroveInfo, error) {
 	var subgroves []SubgroveInfo
-	err := i.client.get(ctx, "/subgroves", &subgroves)
+	err := i.client.getData(ctx, "/subgroves", &subgroves)
 	if err != nil {
 		return nil, err
 	}
@@ -374,7 +376,7 @@ func (i *IndexingOperations) ListSubgroves(ctx context.Context) ([]SubgroveInfo,
 // GetSubgrove retrieves information about a specific subgrove.
 func (i *IndexingOperations) GetSubgrove(ctx context.Context, subgroveID string) (*SubgroveInfo, error) {
 	var subgrove SubgroveInfo
-	err := i.client.get(ctx, fmt.Sprintf("/subgroves/%s", subgroveID), &subgrove)
+	err := i.client.getData(ctx, fmt.Sprintf("/subgroves/%s", subgroveID), &subgrove)
 	if err != nil {
 		return nil, err
 	}
@@ -384,7 +386,7 @@ func (i *IndexingOperations) GetSubgrove(ctx context.Context, subgroveID string)
 // ListIndexers retrieves all indexers.
 func (i *IndexingOperations) ListIndexers(ctx context.Context) ([]IndexerInfo, error) {
 	var indexers []IndexerInfo
-	err := i.client.get(ctx, "/indexers", &indexers)
+	err := i.client.getData(ctx, "/indexers", &indexers)
 	if err != nil {
 		return nil, err
 	}
@@ -394,22 +396,18 @@ func (i *IndexingOperations) ListIndexers(ctx context.Context) ([]IndexerInfo, e
 // GetIndexer retrieves information about a specific indexer.
 func (i *IndexingOperations) GetIndexer(ctx context.Context, indexerID string) (*IndexerInfo, error) {
 	var indexer IndexerInfo
-	err := i.client.get(ctx, fmt.Sprintf("/indexers/%s", indexerID), &indexer)
+	err := i.client.getData(ctx, fmt.Sprintf("/indexers/%s", indexerID), &indexer)
 	if err != nil {
 		return nil, err
 	}
 	return &indexer, nil
 }
 
-// GetIndexerStatus retrieves the status of an indexer for a subgrove.
+// GetIndexerStatus returns an unsupported-operation error and sends nothing:
+// the API serves no per-subgrove indexer status route. GetIndexer reads an
+// indexer, with the subgroves it serves and its status.
 func (i *IndexingOperations) GetIndexerStatus(ctx context.Context, indexerID, subgroveID string) (*IndexerInfo, error) {
-	var indexer IndexerInfo
-	path := fmt.Sprintf("/indexers/%s/status/%s", indexerID, subgroveID)
-	err := i.client.get(ctx, path, &indexer)
-	if err != nil {
-		return nil, err
-	}
-	return &indexer, nil
+	return nil, NewUnsupportedError("GetIndexerStatus: the API serves no per-subgrove indexer status route; GetIndexer reads an indexer, with the subgroves it serves and its status")
 }
 
 func (i *IndexingOperations) verifyProof(ctx context.Context, proof []byte) error {
@@ -430,7 +428,7 @@ func (i *IndexingOperations) verifyProof(ctx context.Context, proof []byte) erro
 	}
 
 	// Compare root hashes
-	if result.RootHash != trustedHeader.AppHash {
+	if !strings.EqualFold(result.RootHash, trustedHeader.AppHash) {
 		return NewProofError(fmt.Sprintf("root hash mismatch: expected %s, got %s",
 			trustedHeader.AppHash, result.RootHash))
 	}

@@ -36,7 +36,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
-	client.RegisterDID(ctx, identity.DidDocument)
 	client.SetIdentity(identity)
 	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
@@ -59,10 +58,10 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   ID: %s\n", balance.ID)
-		fmt.Printf("   Balance: %d\n", balance.Balance)
-		fmt.Printf("   Available: %d\n", balance.Available)
-		fmt.Printf("   Locked: %d\n\n", balance.Locked)
+		fmt.Printf("   DID: %s\n", balance.DID)
+		fmt.Printf("   Available: %s\n", balance.Available)
+		fmt.Printf("   Staked: %s\n", balance.Staked)
+		fmt.Printf("   Locked: %s\n\n", balance.Locked)
 	}
 
 	// 3. Get balance for a specific DID
@@ -72,7 +71,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   Balance for %s: %d\n\n", targetDID, balance.Balance)
+		fmt.Printf("   Available balance for %s: %s\n\n", targetDID, balance.Available)
 	}
 
 	// 4. Get fee schedule
@@ -120,11 +119,10 @@ func main() {
 	} else {
 		fmt.Printf("   Found %d validators:\n", len(validators))
 		for _, v := range validators {
-			fmt.Printf("   - %s\n", v.Moniker)
-			fmt.Printf("     Address: %s\n", truncate(v.Address, 20))
-			fmt.Printf("     Voting Power: %d\n", v.VotingPower)
-			fmt.Printf("     Status: %s\n", v.Status)
-			fmt.Printf("     Commission: %.2f%%\n", v.Commission*100)
+			fmt.Printf("   - %s\n", truncate(v.DID, 40))
+			fmt.Printf("     Total stake: %s\n", v.TotalStake)
+			fmt.Printf("     Self stake: %s\n", v.SelfStake)
+			fmt.Printf("     Status: %s\n", v.Status())
 		}
 	}
 
@@ -137,13 +135,13 @@ func main() {
 		fmt.Printf("   Active validators: %d\n", len(activeValidators))
 	}
 
-	// 9. Get total voting power
-	fmt.Println("\n9. Getting total voting power...")
-	totalPower, err := client.Validators.GetTotalVotingPower(ctx)
+	// 9. Get total stake
+	fmt.Println("\n9. Getting the active validators' total stake...")
+	totalStake, err := client.Validators.GetTotalStake(ctx)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Printf("   Total voting power: %d\n", totalPower)
+		fmt.Printf("   Total stake: %s\n", totalStake)
 	}
 
 	// 10. Summary of token operations

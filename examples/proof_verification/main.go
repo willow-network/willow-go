@@ -45,11 +45,10 @@ func main() {
 	}
 	fmt.Printf("   DID: %s\n", identity.DID())
 
-	_, err = client.RegisterDID(ctx, identity.DidDocument)
-	if err != nil {
+	// A DID is registered on chain by a RegisterDid transaction, which this
+	// SDK does not build; RegisterDID says so.
+	if _, err = client.RegisterDID(ctx, identity.DidDocument); err != nil {
 		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Println("   DID registered")
 	}
 
 	client.SetIdentity(identity)
@@ -74,13 +73,9 @@ func main() {
 	}
 	fmt.Println()
 
-	// 4. Get with automatic verification (default)
-	fmt.Println("4. Get with automatic verification...")
-	fmt.Println("   The SDK automatically:")
-	fmt.Println("   - Requests the data with proof from the API")
-	fmt.Println("   - Verifies the proof against the light client (if configured)")
-	fmt.Println("   - Compares against the consensus root hash")
-	fmt.Println("   - Returns error if verification fails")
+	// 4. Get. The API's data route answers with the value alone; step 8
+	// fetches the key's proof.
+	fmt.Println("4. Get...")
 	fmt.Println()
 
 	response, err := client.Data.Get(ctx, subgroveID, "test-key")
@@ -88,7 +83,7 @@ func main() {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Data retrieved and VERIFIED:")
+		fmt.Println("   Data retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 	fmt.Println()

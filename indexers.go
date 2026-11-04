@@ -8,6 +8,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 // QuerySource tells the routing layer where to send a query.
@@ -196,7 +198,7 @@ func syntheticEntry(url string) IndexerInfo {
 	return IndexerInfo{
 		IndexerDID:       "explicit-override",
 		Subgroves:        nil,
-		StakeAmount:      0,
+		StakeAmount:      consensus.Uint128{},
 		Endpoint:         url,
 		QueryEndpoint:    url,
 		Status:           "active",

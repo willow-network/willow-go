@@ -43,13 +43,11 @@ func main() {
 	fmt.Printf("   DID: %s\n", identity.DID())
 	fmt.Printf("   Public Key ID: %s\n\n", identity.PublicKeyID())
 
-	// 3. Register the DID
+	// 3. Register the DID. A DID is registered on chain by a RegisterDid
+	// transaction, which this SDK does not build; RegisterDID says so.
 	fmt.Println("3. Registering DID...")
-	_, err = client.RegisterDID(ctx, identity.DidDocument)
-	if err != nil {
+	if _, err = client.RegisterDID(ctx, identity.DidDocument); err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Println("   DID registered successfully")
 	}
 
 	// 4. Set identity for per-request signing
@@ -57,7 +55,8 @@ func main() {
 	client.SetIdentity(identity)
 	fmt.Println("   Identity set — all requests will be signed automatically")
 
-	// 5. Store data (requires an existing subgrove)
+	// 5. Store data: a signed StoreData transaction (requires an existing
+	// subgrove the identity may write to)
 	fmt.Println("5. Storing data...")
 	testData := map[string]interface{}{
 		"name":   "Alice",
@@ -72,14 +71,15 @@ func main() {
 		fmt.Println("   Data stored successfully")
 	}
 
-	// 6. Retrieve data with automatic proof verification
-	fmt.Println("\n6. Retrieving data (with proof verification)...")
+	// 6. Retrieve data (the API's data route carries no proof; GetProof
+	// fetches one)
+	fmt.Println("\n6. Retrieving data...")
 	response, err := client.Data.Get(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Data retrieved and verified:")
+		fmt.Println("   Data retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 

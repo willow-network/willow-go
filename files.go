@@ -200,7 +200,8 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 	return fileData, nil
 }
 
-// Metadata gets file manifest metadata from the validator API.
+// Metadata gets file manifest metadata from the validator API, which answers
+// with the manifest itself, not the success/data envelope.
 func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, error) {
 	req, err := f.client.newAPIRequest(context.Background(), http.MethodGet, fmt.Sprintf("/files/%s/%s", subgroveID, fileKey), nil)
 	if err != nil {
@@ -235,8 +236,17 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 	}
 	defer resp.Body.Close()
 
+	// The API answers {files, limit, start_after, has_more}, or {error} with
+	// a failure status, without the success/data envelope.
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, NewNetworkError("failed to read /files response", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, f.client.handleErrorResponse(resp.StatusCode, body)
+	}
 	var result FileListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 	return result.Files, nil
@@ -291,13 +301,19 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 }
 
 // UnregisterStorageNode submits an UnregisterStorageNode transaction to consensus.
-// The signing options are required for this transaction.
+// The signing options are required for this transaction: SignFunc signs as
+// the node's DID, and Nonce is the transaction's nonce, one past the node's
+// account nonce. It is signed over FormatUnregisterStorageNodeMessage, which
+// binds the node and the nonce.
 func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSigningOptions) error {
 	if signing == nil {
 		return fmt.Errorf("signing options are required to unregister a storage node")
 	}
 
-	message := fmt.Sprintf("unregister_storage_node:%s", nodeDID)
+	message, err := FormatUnregisterStorageNodeMessage(nodeDID, signing.Nonce)
+	if err != nil {
+		return fmt.Errorf("failed to sign unregister storage node tx: %w", err)
+	}
 	sig, err := signing.SignFunc([]byte(message))
 	if err != nil {
 		return fmt.Errorf("failed to sign unregister storage node tx: %w", err)
