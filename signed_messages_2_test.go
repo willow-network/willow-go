@@ -435,6 +435,144 @@ func TestRegisterSubgroveMessageRefusesWhatTheChainRefuses(t *testing.T) {
 	}
 }
 
+// withLists returns tx with its own copy of the mode, whose writers and free
+// readers are set by edit.
+func withLists(tx consensus.RegisterSubgroveTx, edit func(writers, freeReaders *[]string)) consensus.RegisterSubgroveTx {
+	mode := *tx.Mode
+	switch {
+	case mode.DataStorage != nil:
+		m := *mode.DataStorage
+		edit(&m.Writers, &m.FreeReaders)
+		mode.DataStorage = &m
+	case mode.FileStorage != nil:
+		m := *mode.FileStorage
+		edit(&m.Writers, &m.FreeReaders)
+		mode.FileStorage = &m
+	}
+	tx.Mode = &mode
+	return tx
+}
+
+// The chain refuses a DataStorage or FileStorage registration whose admins,
+// writers, or free readers aren't DIDs ("did:willow:" then letters, digits,
+// '-', or '_', at most 128 bytes), or whose schema doesn't parse as its
+// SchemaDefinition, so the builder refuses them before signing.
+func TestRegisterSubgroveMessageRefusesNonDIDsAndSchemasTheChainCantRead(t *testing.T) {
+	notDIDs := map[string]string{
+		"no prefix":       "alice",
+		"another method":  "did:key:abc",
+		"empty body":      "did:willow:",
+		"a colon":         "did:willow:a:b",
+		"a space":         "did:willow:a b",
+		"not ASCII":       "did:willow:café",
+		"over 128 bytes":  "did:willow:" + strings.Repeat("a", 118),
+		"upper-case path": "DID:willow:a",
+	}
+	badSchemas := map[string]string{
+		"field type int":          `{"version":1,"fields":{"a":"int"},"indexes":[],"required_fields":[]}`,
+		"field type upper-case":   `{"fields":{"a":"String"}}`,
+		"field type null":         `{"fields":{"a":null}}`,
+		"overwritten bad type":    `{"fields":{"a":"int","a":"string"}}`,
+		"fields a list":           `{"fields":[]}`,
+		"fields null":             `{"fields":null}`,
+		"version a string":        `{"version":"1"}`,
+		"version negative":        `{"version":-1}`,
+		"version a fraction":      `{"version":1.5}`,
+		"version over u32":        `{"version":4294967296}`,
+		"version null":            `{"version":null}`,
+		"key twice":               `{"version":1,"version":1}`,
+		"indexes null":            `{"indexes":null}`,
+		"required field a number": `{"required_fields":[1]}`,
+		"required_fields null":    `{"required_fields":null}`,
+		"empty":                   ``,
+		"not JSON":                `{`,
+		"a list":                  `[]`,
+		"null":                    `null`,
+		"two objects":             `{} {}`,
+	}
+	for _, kat := range []string{"RegisterSubgrove (data)", "RegisterSubgrove (file)"} {
+		var tx consensus.RegisterSubgroveTx
+		decodeExactly(t, loadKATBody(t, kat), &tx)
+		cases := map[string]consensus.RegisterSubgroveTx{}
+		for name, did := range notDIDs {
+			admin := tx
+			admin.Admins = []string{"did:willow:b", did}
+			cases["admin, "+name] = admin
+			cases["writer, "+name] = withLists(tx, func(w, _ *[]string) { *w = []string{did} })
+			cases["free reader, "+name] = withLists(tx, func(_, r *[]string) { *r = []string{"did:willow:c", did} })
+		}
+		for name, schema := range badSchemas {
+			c := tx
+			c.Schema = schema
+			cases["schema, "+name] = c
+		}
+		for name, c := range cases {
+			if msg, err := FormatRegisterSubgroveMessage(&c); !IsValidationError(err) || msg != "" {
+				t.Errorf("%s, %s: got %q, %v; want a validation error", kat, name, msg, err)
+			}
+		}
+
+		accepted := map[string]consensus.RegisterSubgroveTx{}
+		for name, schema := range map[string]string{
+			"no keys":         `{}`,
+			"every type":      `{"version":2,"fields":{"a":"string","b":"number","c":"boolean","d":"array","e":"object","f":"bytes"},"required_fields":["a"]}`,
+			"an unknown key":  `{"fields":{},"name":"ignored","extra":[{"x":null}]}`,
+			"whitespace":      " \n{ \"version\" : 0 } \n",
+			"an escaped type": `{"fields":{"a":"string"}}`,
+		} {
+			c := tx
+			c.Schema = schema
+			accepted["schema, "+name] = c
+		}
+		longest := "did:willow:" + strings.Repeat("Z", 117)
+		accepted["DIDs at the rule's edges"] = withLists(tx, func(w, r *[]string) {
+			*w, *r = []string{longest, "did:willow:_"}, []string{"did:willow:-", "did:willow:aZ09-_"}
+		})
+		for name, c := range accepted {
+			if _, err := FormatRegisterSubgroveMessage(&c); err != nil {
+				t.Errorf("%s, %s: %v", kat, name, err)
+			}
+		}
+	}
+}
+
+// The chain refuses a private DataStorage registration whose initial owner
+// key grant isn't key epoch 0 to the owner (a DID), so the builder refuses it
+// before signing; without privacy, the chain doesn't read the grant.
+func TestRegisterSubgroveMessageRefusesAnInitialGrantTheChainRefuses(t *testing.T) {
+	var tx consensus.RegisterSubgroveTx
+	decodeExactly(t, loadKATBody(t, "RegisterSubgrove (private, non-ASCII, large nonce)"), &tx)
+	if _, err := FormatRegisterSubgroveMessage(&tx); err != nil {
+		t.Fatalf("the KAT's grant: %v", err)
+	}
+	for name, edit := range map[string]func(*consensus.EncryptedKeyGrant){
+		"key epoch 1":                           func(g *consensus.EncryptedKeyGrant) { g.KeyEpoch = 1 },
+		"to another DID":                        func(g *consensus.EncryptedKeyGrant) { g.GranteeDID = "did:willow:b" },
+		"to no one":                             func(g *consensus.EncryptedKeyGrant) { g.GranteeDID = "" },
+		"epoch 1 to the owner, another grantor": func(g *consensus.EncryptedKeyGrant) { g.KeyEpoch, g.GrantedBy = 1, "did:willow:b" },
+	} {
+		grant := *tx.InitialOwnerKeyGrant
+		edit(&grant)
+		c := tx
+		c.InitialOwnerKeyGrant = &grant
+		if msg, err := FormatRegisterSubgroveMessage(&c); !IsValidationError(err) || msg != "" {
+			t.Errorf("%s: got %q, %v; want a validation error", name, msg, err)
+		}
+		c.Privacy = nil
+		if _, err := FormatRegisterSubgroveMessage(&c); err != nil {
+			t.Errorf("%s without privacy: %v", name, err)
+		}
+	}
+	// An owner that isn't a DID can't be the grantee either.
+	grant := *tx.InitialOwnerKeyGrant
+	grant.GranteeDID = "owner"
+	c := tx
+	c.OwnerDid, c.InitialOwnerKeyGrant = "owner", &grant
+	if _, err := FormatRegisterSubgroveMessage(&c); !IsValidationError(err) {
+		t.Errorf("grant to an owner that isn't a DID: %v", err)
+	}
+}
+
 // ChainSchemaJSON refuses a schema with an index, and doesn't send the
 // schema's name or description, which the chain's schema has no place for.
 func TestChainSchemaJSONRefusesIndexes(t *testing.T) {

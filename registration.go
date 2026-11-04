@@ -28,11 +28,11 @@ type RegistrationOperations struct {
 //
 // OwnerDid, when set, must be the identity's DID, and RewardRate must be 0: a
 // DataStorage registration has no reward rate. SubgroveID must be 1 to 64
-// ASCII letters, digits, '-', or '_', starting with a letter or digit, and the
-// schema must declare no indexes, as the chain requires. It returns once the
-// chain's CheckTx accepts the transaction, with the nonce and transaction
-// hash; the subgrove exists once the transaction lands (see
-// Client.WaitUntilLanded) and is applied in its block.
+// ASCII letters, digits, '-', or '_', starting with a letter or digit, Writers
+// and Readers must be DIDs, and the schema must declare no indexes, as the
+// chain requires. It returns once the chain's CheckTx accepts the transaction,
+// with the nonce and transaction hash; the subgrove exists once the
+// transaction lands (see Client.WaitUntilLanded) and is applied in its block.
 func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*WriteResult, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err

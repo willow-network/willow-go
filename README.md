@@ -86,8 +86,9 @@ every field, nil lists as `[]`, a nil `Mode` as the chain's default
 DataStorage, and other absent options as `null`, so the chain decodes the
 values the hash covers. The SDK signs DataStorage and FileStorage
 registrations; it refuses to sign a BlockchainIndexing one, whose mode its
-types don't encode, and one the chain would refuse for its subgrove id or
-schema indexes (see Subgrove Management).
+types don't encode, and one the chain would refuse for its subgrove id, its
+admins, writers, or free readers, its schema, or a private registration's
+initial owner key grant (see Subgrove Management).
 
 Ed25519 signs the message's UTF-8 bytes. secp256k1 signs their Keccak-256
 (low-S; the SDK sends DER, and the chain also accepts 64-byte compact r||s).
@@ -336,10 +337,16 @@ The schema is sent in the chain's form (`SchemaDefinition.ChainSchemaJSON`):
 a map of field name to type (`string`, `number`, `boolean`, `array`,
 `object`, `bytes`) and the required fields; its name and description label
 it in the SDK and are not sent. The chain refuses a DataStorage or FileStorage
-registration whose schema declares indexes, or whose subgrove id isn't 1 to 64
-ASCII letters, digits, `-`, or `_` starting with a letter or digit, so the SDK
-refuses either before signing with a validation error (an index is one added
-with the schema builder's index methods, or a field marked indexed). For a
+registration whose subgrove id isn't 1 to 64 ASCII letters, digits, `-`, or
+`_` starting with a letter or digit; whose admins, writers, or free readers
+aren't DIDs (`did:willow:` then ASCII letters, digits, `-`, or `_`, at most
+128 bytes); whose schema doesn't parse as its schema definition (`version` a
+u32, `fields` a map of name to one of the six types, `indexes`, and
+`required_fields` a list of names; each optional, unknown keys ignored) or
+declares indexes; and a private DataStorage registration whose
+`InitialOwnerKeyGrant` isn't key epoch 0 to the owner. The SDK refuses each
+before signing with a validation error (an index is one added with the schema
+builder's index methods, or a field marked indexed). For a
 FileStorage or private registration, read pricing, admins, or initial funding,
 build a `consensus.RegisterSubgroveTx` and sign it (a nil `Mode` is sent as
 the chain's default, an empty DataStorage):

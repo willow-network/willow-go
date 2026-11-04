@@ -1,10 +1,12 @@
 package willow
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -149,8 +151,12 @@ func FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID string, nonce
 // FileStorage registrations only. A nil Mode is the chain's default
 // DataStorage. It also refuses what the chain refuses in a DataStorage or
 // FileStorage registration: a subgrove id that isn't 1 to 64 ASCII letters,
-// digits, '-', or '_' starting with a letter or digit, and a schema that
-// declares indexes.
+// digits, '-', or '_' starting with a letter or digit; admins, writers, or
+// free readers that aren't DIDs ("did:willow:" then ASCII letters, digits,
+// '-', or '_', at most 128 bytes); a schema that doesn't parse as the chain's
+// schema definition (see SchemaDefinition.ChainSchemaJSON) or declares
+// indexes; and, in a private DataStorage registration, an initial owner key
+// grant that isn't key epoch 0 to the owner.
 func FormatRegisterSubgroveMessage(tx *consensus.RegisterSubgroveTx) (string, error) {
 	if tx == nil {
 		return "", NewValidationError("no RegisterSubgrove transaction")
@@ -169,10 +175,7 @@ func FormatRegisterSubgroveMessage(tx *consensus.RegisterSubgroveTx) (string, er
 			return "", NewValidationError("this SDK can't encode a BlockchainIndexing registration, so it won't sign one; it signs DataStorage and FileStorage registrations")
 		}
 	}
-	if err := validateStorageSubgroveID(tx.SubgroveID); err != nil {
-		return "", err
-	}
-	if err := refuseSchemaIndexes(tx.Schema); err != nil {
+	if err := checkStorageRegistration(tx); err != nil {
 		return "", err
 	}
 	body, err := json.Marshal(tx)
@@ -212,18 +215,188 @@ func validateStorageSubgroveID(id string) error {
 	return nil
 }
 
-// refuseSchemaIndexes refuses a schema (the transaction's schema JSON text)
-// that declares indexes, which the chain refuses in a DataStorage or
-// FileStorage registration. A schema that doesn't parse is left to the
-// encoder and the chain.
-func refuseSchemaIndexes(schema string) error {
-	var parsed struct {
-		Indexes []json.RawMessage `json:"indexes"`
+// validateWillowDID applies the chain's rule for a DID it stores in a
+// permission or a key grant: "did:willow:" then one or more ASCII letters,
+// digits, '-', or '_', at most 128 bytes in all. label names the field.
+func validateWillowDID(did, label string) error {
+	body, ok := strings.CutPrefix(did, "did:willow:")
+	if !ok {
+		return NewValidationError(fmt.Sprintf("%s %q must start with \"did:willow:\"", label, did))
 	}
-	if json.Unmarshal([]byte(schema), &parsed) == nil && len(parsed.Indexes) > 0 {
-		return NewValidationError("the chain doesn't support schema indexes, so a registration whose schema declares them is refused")
+	if len(did) > 128 {
+		return NewValidationError(fmt.Sprintf("%s %q is %d bytes, more than 128", label, did, len(did)))
+	}
+	if body == "" {
+		return NewValidationError(fmt.Sprintf("%s %q has nothing after \"did:willow:\"", label, did))
+	}
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return NewValidationError(fmt.Sprintf("%s %q may hold only ASCII letters, digits, '-', and '_' after \"did:willow:\"", label, did))
+		}
 	}
 	return nil
+}
+
+// checkStorageRegistration refuses, before signing, what the chain refuses
+// in a DataStorage or FileStorage registration: an id outside its rule;
+// admins, writers, or free readers that aren't DIDs; a schema that doesn't
+// parse as its schema definition or declares indexes; and, in a private
+// DataStorage registration, an initial owner key grant that isn't key epoch 0
+// to the owner.
+func checkStorageRegistration(tx *consensus.RegisterSubgroveTx) error {
+	if err := validateStorageSubgroveID(tx.SubgroveID); err != nil {
+		return err
+	}
+	for _, admin := range tx.Admins {
+		if err := validateWillowDID(admin, "admin"); err != nil {
+			return err
+		}
+	}
+	var writers, freeReaders []string
+	dataStorage := tx.Mode == nil || tx.Mode.DataStorage != nil
+	switch {
+	case tx.Mode == nil:
+	case tx.Mode.DataStorage != nil:
+		writers, freeReaders = tx.Mode.DataStorage.Writers, tx.Mode.DataStorage.FreeReaders
+	case tx.Mode.FileStorage != nil:
+		writers, freeReaders = tx.Mode.FileStorage.Writers, tx.Mode.FileStorage.FreeReaders
+	}
+	for _, writer := range writers {
+		if err := validateWillowDID(writer, "writer"); err != nil {
+			return err
+		}
+	}
+	for _, reader := range freeReaders {
+		if err := validateWillowDID(reader, "free reader"); err != nil {
+			return err
+		}
+	}
+	if err := checkChainSchema(tx.Schema); err != nil {
+		return err
+	}
+	if grant := tx.InitialOwnerKeyGrant; dataStorage && tx.Privacy != nil && grant != nil {
+		if grant.KeyEpoch != 0 {
+			return NewValidationError(fmt.Sprintf("a private subgrove's initial owner key grant must be key epoch 0, not %d", grant.KeyEpoch))
+		}
+		if grant.GranteeDID != tx.OwnerDid {
+			return NewValidationError(fmt.Sprintf("a private subgrove's initial owner key grant must grant the owner %q, not %q", tx.OwnerDid, grant.GranteeDID))
+		}
+		if err := validateWillowDID(grant.GranteeDID, "initial owner key grant grantee"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// chainFieldTypes are the field types of the chain's schema definition.
+var chainFieldTypes = map[string]bool{"string": true, "number": true, "boolean": true, "array": true, "object": true, "bytes": true}
+
+// checkChainSchema refuses a schema (the transaction's schema JSON text) the
+// chain refuses in a DataStorage or FileStorage registration: one that doesn't
+// parse as its SchemaDefinition, a JSON object whose keys are each optional
+// and whose unknown keys are ignored,
+//
+//	{"version": <u32>, "fields": {"<name>": "string" | "number" | "boolean" | "array" | "object" | "bytes", …},
+//	 "indexes": [], "required_fields": ["<name>", …]}
+//
+// (a known key given twice or as null is refused), and one that declares
+// indexes, which the chain doesn't support.
+func checkChainSchema(schema string) error {
+	invalid := func(format string, args ...interface{}) error {
+		return NewValidationError("the schema doesn't parse as the chain's schema definition, which the chain refuses: " + fmt.Sprintf(format, args...))
+	}
+	entries, err := jsonObjectEntries([]byte(schema))
+	if err != nil {
+		return invalid("%v", err)
+	}
+	seen := map[string]bool{}
+	for _, entry := range entries {
+		switch entry.key {
+		case "version", "fields", "indexes", "required_fields":
+		default:
+			continue
+		}
+		if seen[entry.key] {
+			return invalid("%q appears twice", entry.key)
+		}
+		seen[entry.key] = true
+		value := entry.value
+		switch entry.key {
+		case "version":
+			if _, err := strconv.ParseUint(string(value), 10, 32); err != nil {
+				return invalid("version %s isn't an unsigned 32-bit integer", value)
+			}
+		case "fields":
+			fields, err := jsonObjectEntries(value)
+			if err != nil {
+				return invalid("fields: %v", err)
+			}
+			for _, field := range fields {
+				var fieldType string
+				if !bytes.HasPrefix(field.value, []byte(`"`)) || json.Unmarshal(field.value, &fieldType) != nil || !chainFieldTypes[fieldType] {
+					return invalid("field %q has type %s; the chain's types are string, number, boolean, array, object, and bytes", field.key, field.value)
+				}
+			}
+		case "indexes":
+			var indexes []json.RawMessage
+			if !bytes.HasPrefix(value, []byte("[")) || json.Unmarshal(value, &indexes) != nil {
+				return invalid("indexes %s isn't a list", value)
+			}
+			if len(indexes) > 0 {
+				return NewValidationError("the chain doesn't support schema indexes, so a registration whose schema declares them is refused")
+			}
+		case "required_fields":
+			var names []json.RawMessage
+			if !bytes.HasPrefix(value, []byte("[")) || json.Unmarshal(value, &names) != nil {
+				return invalid("required_fields %s isn't a list", value)
+			}
+			for _, name := range names {
+				if !bytes.HasPrefix(name, []byte(`"`)) {
+					return invalid("required field %s isn't a string", name)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// jsonEntry is one member of a JSON object: its key and its value's JSON text.
+type jsonEntry struct {
+	key   string
+	value []byte
+}
+
+// jsonObjectEntries reads data as one JSON object (with nothing after it but
+// whitespace) and returns its members in order, a key given twice included.
+func jsonObjectEntries(data []byte) ([]jsonEntry, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return nil, fmt.Errorf("%s isn't a JSON object", data)
+	}
+	var entries []jsonEntry
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := tok.(string)
+		if !ok {
+			return nil, fmt.Errorf("%s isn't a JSON object", data)
+		}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return nil, err
+		}
+		entries = append(entries, jsonEntry{key: key, value: bytes.TrimSpace(value)})
+	}
+	if _, err := dec.Token(); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("%s holds more than one JSON value", data)
+	}
+	return entries, nil
 }
 
 // FormatGrantSubgroveKeyMessage returns the message a GrantSubgroveKey
