@@ -512,8 +512,10 @@ endpoints the light client took it from, not verified against the validators.
   The SDK requires the proof to be for the address, block, and slots asked
   for (in order), and in `EthWalkProofs` mode (the default) walks it, but it
   has no trusted source of Ethereum block headers, so it can't check that the
-  root is Ethereum's: every result is the indexer's claim. An `eth_call`'s
-  result is bound by no proof.
+  root is Ethereum's: every result is the indexer's claim. A zero slot value
+  is proved by the slot's absence from the storage trie, and an account that
+  doesn't exist by its absence from the state trie (it reads as empty). An
+  `eth_call`'s result is bound by no proof.
 - File downloads: `Files.Download` checks the chunks against the manifest's
   chunk Merkle root and content hash, with the manifest as the API sends it,
   unverified.

@@ -155,6 +155,12 @@ type VerifiedCall = EthCallResult
 // (the default) the SDK walks the proofs, so a result is at least consistent
 // with the root the answer names; in EthSkipProofs mode it doesn't.
 //
+// A zero storage value is proved by the slot's absence from the account's
+// storage trie, and an account that doesn't exist by its absence from the
+// state trie. Such an account reads as nonce and balance zero, every slot
+// asked of it zero, and the storage root and code hash the answer carries:
+// the empty ones, or zero hashes (as geth names them).
+//
 // In every mode an answer must be about what was asked: a state read's proof
 // must be for the address, block, and slots requested, in order, and a call's
 // state proofs for the block requested, under the answer's state root.
@@ -408,10 +414,24 @@ func (e *EthOperations) post(ctx context.Context, path string, body interface{})
 	return &env, nil
 }
 
+// emptyTrieRoot is the root of a Merkle Patricia trie with no keys,
+// keccak256(rlp("")): an account without storage has it as its storage hash.
+var emptyTrieRoot = keccak256([]byte{0x80})
+
+// emptyCodeHash is keccak256(""), the code hash of an account without code.
+var emptyCodeHash = keccak256(nil)
+
 // walkStateProof walks the account MPT proof against the proof's own state
 // root, and every storage proof against the account's storage hash. Returns an
 // error on the first mismatch. It checks the proof is consistent with that
 // root, not that the root is Ethereum's.
+//
+// A key the trie doesn't hold has no leaf, so its proof shows it absent (the
+// path ends at an empty branch child or diverges from the key's): that proves
+// a zero storage value, or an absent account. An absent account must be
+// claimed empty, with nonce and balance zero and the empty storage root and
+// code hash (or zero hashes, as geth names them), and every slot asked of it
+// zero. A zero value is never stored, so it must be proved absent.
 func walkStateProof(proof *wireStateProof) error {
 	stateRoot := intsToBytes(proof.StateRoot)
 	address := intsToBytes(proof.Address)
@@ -421,41 +441,86 @@ func walkStateProof(proof *wireStateProof) error {
 	balance := new(big.Int).SetBytes(intsToBytes(proof.AccountState.Balance))
 	storageHash := intsToBytes(proof.AccountState.StorageHash)
 	codeHash := intsToBytes(proof.AccountState.CodeHash)
-	accountLeaf := rlpEncodeAccount(nonce, balance, storageHash, codeHash)
 
 	nodes := intsToBytesSlices(proof.AccountProof.ProofNodes)
-	if err := verifyMptProof(stateRoot, addrHash, accountLeaf, nodes); err != nil {
+	leaf, found, err := mptLookup(stateRoot, addrHash, nodes)
+	if err != nil {
 		return fmt.Errorf("account proof: %w", err)
+	}
+	if found {
+		if !bytes.Equal(leaf, rlpEncodeAccount(nonce, balance, storageHash, codeHash)) {
+			return errors.New("account proof: the account the proof holds isn't the one the answer claims")
+		}
+	} else {
+		if nonce != 0 || balance.Sign() != 0 ||
+			!(bytes.Equal(storageHash, emptyTrieRoot) || isZeroHash(storageHash)) ||
+			!(bytes.Equal(codeHash, emptyCodeHash) || isZeroHash(codeHash)) {
+			return errors.New("account proof: the proof shows the account absent, but the answer claims a nonce, balance, storage, or code")
+		}
+		// An absent account has no storage.
+		storageHash = emptyTrieRoot
 	}
 
 	for i, sp := range proof.StorageProofs {
 		slot := intsToBytes(sp.Slot)
 		value := new(big.Int).SetBytes(intsToBytes(sp.Value))
-		var valueRlp []byte
-		if value.Sign() == 0 {
-			valueRlp = rlpEncodeBytes(nil)
-		} else {
-			valueRlp = rlpEncodeBytes(trimLeadingZeros(value.Bytes()))
-		}
 		nodes := intsToBytesSlices(sp.Proof.ProofNodes)
-		if err := verifyMptProof(storageHash, keccak256(slot), valueRlp, nodes); err != nil {
+		leaf, found, err := mptLookup(storageHash, keccak256(slot), nodes)
+		if err != nil {
 			return fmt.Errorf("storage proof %d: %w", i, err)
+		}
+		switch {
+		case !found && value.Sign() != 0:
+			return fmt.Errorf("storage proof %d: the proof shows the slot unset (zero), but the answer claims %s", i, value)
+		case found && value.Sign() == 0:
+			return fmt.Errorf("storage proof %d: the proof shows the slot set, but the answer claims zero", i)
+		case found && !bytes.Equal(leaf, rlpEncodeBytes(value.Bytes())):
+			return fmt.Errorf("storage proof %d: leaf value mismatch", i)
 		}
 	}
 	return nil
 }
 
+func isZeroHash(b []byte) bool {
+	return len(b) == 32 && bytes.Equal(b, make([]byte, 32))
+}
+
 // MPT verifier ---------------------------------------------------------------
 
+// verifyMptProof checks that proofNodes show keyHash holding expectedValue
+// under root, or, with expectedValue nil, absent from it.
 func verifyMptProof(root, keyHash, expectedValue []byte, proofNodes [][]byte) error {
+	value, found, err := mptLookup(root, keyHash, proofNodes)
+	switch {
+	case err != nil:
+		return err
+	case !found && expectedValue != nil:
+		return errors.New("the proof shows the key absent, not holding the value claimed")
+	case found && expectedValue == nil:
+		return errors.New("the proof shows the key holding a value, not absent")
+	case found && !bytes.Equal(value, expectedValue):
+		return errors.New("leaf value mismatch")
+	}
+	return nil
+}
+
+// mptLookup walks proofNodes from root along keyHash. It returns the value
+// the proof shows under keyHash (found), or found false when the proof shows
+// keyHash absent: its path ends at an empty branch child, or diverges from
+// an extension's or a leaf's. A proof with no nodes (or only the empty node)
+// shows every key absent from the empty trie, and from no other root.
+func mptLookup(root, keyHash []byte, proofNodes [][]byte) (value []byte, found bool, err error) {
 	if len(root) != 32 {
-		return fmt.Errorf("root must be 32 bytes, got %d", len(root))
+		return nil, false, fmt.Errorf("root must be 32 bytes, got %d", len(root))
 	}
 	if len(keyHash) != 32 {
-		return fmt.Errorf("key must be 32 bytes, got %d", len(keyHash))
+		return nil, false, fmt.Errorf("key must be 32 bytes, got %d", len(keyHash))
 	}
-	if len(proofNodes) == 0 {
-		return errors.New("proof is empty")
+	if len(proofNodes) == 0 || (len(proofNodes) == 1 && bytes.Equal(proofNodes[0], []byte{0x80})) {
+		if bytes.Equal(root, emptyTrieRoot) {
+			return nil, false, nil
+		}
+		return nil, false, errors.New("proof is empty, and the root isn't the empty trie's")
 	}
 	nibs := bytesToNibbles(keyHash)
 	expected := root
@@ -463,56 +528,52 @@ func verifyMptProof(root, keyHash, expectedValue []byte, proofNodes [][]byte) er
 
 	for i, node := range proofNodes {
 		if !bytes.Equal(keccak256(node), expected) {
-			return fmt.Errorf("node %d: hash mismatch", i)
+			return nil, false, fmt.Errorf("node %d: hash mismatch", i)
 		}
 		decoded, err := rlpDecodeList(node)
 		if err != nil {
-			return fmt.Errorf("node %d: rlp decode: %w", i, err)
+			return nil, false, fmt.Errorf("node %d: rlp decode: %w", i, err)
 		}
 		switch len(decoded) {
 		case 17:
 			if idx == len(nibs) {
-				return checkValue(decoded[16], expectedValue)
+				if len(decoded[16]) == 0 {
+					return nil, false, nil
+				}
+				return decoded[16], true, nil
 			}
 			next := decoded[nibs[idx]]
 			idx++
 			if len(next) == 0 {
-				return checkValue(nil, expectedValue)
+				return nil, false, nil
 			}
 			if len(next) != 32 {
-				return fmt.Errorf("node %d: inline-embedded child not supported (len %d)", i, len(next))
+				return nil, false, fmt.Errorf("node %d: inline-embedded child not supported (len %d)", i, len(next))
 			}
 			expected = next
 		case 2:
 			path, isLeaf := decodeCompactPath(decoded[0])
 			remaining := nibs[idx:]
 			if len(path) > len(remaining) || !nibblesEqual(path, remaining[:len(path)]) {
-				return checkValue(nil, expectedValue)
+				return nil, false, nil
 			}
 			idx += len(path)
 			if isLeaf {
 				if idx != len(nibs) {
-					return checkValue(nil, expectedValue)
+					return nil, false, nil
 				}
-				return checkValue(decoded[1], expectedValue)
+				return decoded[1], true, nil
 			}
 			ref := decoded[1]
 			if len(ref) != 32 {
-				return fmt.Errorf("node %d: inline-embedded extension child not supported (len %d)", i, len(ref))
+				return nil, false, fmt.Errorf("node %d: inline-embedded extension child not supported (len %d)", i, len(ref))
 			}
 			expected = ref
 		default:
-			return fmt.Errorf("node %d: unexpected RLP shape (len %d)", i, len(decoded))
+			return nil, false, fmt.Errorf("node %d: unexpected RLP shape (len %d)", i, len(decoded))
 		}
 	}
-	return errors.New("proof exhausted without reaching leaf")
-}
-
-func checkValue(actual, expected []byte) error {
-	if bytes.Equal(actual, expected) {
-		return nil
-	}
-	return fmt.Errorf("leaf value mismatch")
+	return nil, false, errors.New("proof exhausted without reaching leaf")
 }
 
 // minimal RLP -----------------------------------------------------------------
