@@ -98,7 +98,7 @@ func TestRlpDecodeRoundTrips(t *testing.T) {
 }
 
 // oneSlotProof builds a state proof whose account and storage tries each hold
-// one leaf: address's account, and slot holding value, at block.
+// one leaf: address's account (a contract's), and slot holding value, at block.
 func oneSlotProof(address, slot []byte, value byte, block uint64) wireStateProof {
 	leaf := func(key, value []byte) []byte {
 		path := append([]byte{0x20}, keccak256(key)...) // leaf, even nibble count
@@ -106,7 +106,7 @@ func oneSlotProof(address, slot []byte, value byte, block uint64) wireStateProof
 	}
 	storageLeaf := leaf(slot, rlpEncodeBytes([]byte{value}))
 	storageHash := keccak256(storageLeaf)
-	codeHash := keccak256(nil)
+	codeHash := keccak256([]byte{0x60, 0x80})
 	balance := big.NewInt(1000)
 	accountLeaf := leaf(address, rlpEncodeAccount(7, balance, storageHash, codeHash))
 	ints := func(b []byte) []int {
@@ -443,6 +443,51 @@ func TestWalkRefusesKeysOfAnotherLength(t *testing.T) {
 		eth, _ := ethServer(t, &wireEnvelope{Answer: "AA", StateRoot: p.StateRoot, BlockRange: [2]uint64{9, 9}, StateProofs: []wireStateProof{honest, p}})
 		if call, err := eth.GetCall(ctx, map[string]interface{}{}, 9); err == nil {
 			t.Errorf("%s: a call's state proof was accepted: %+v", name, call.AccessStateReads)
+		}
+	}
+}
+
+// Erc20Balance refuses a token address with no contract: an account that
+// doesn't exist, or one without code. A wrong balance slot reads as zero.
+func TestErc20BalanceNeedsAContract(t *testing.T) {
+	ctx := context.Background()
+	token := bytes.Repeat([]byte{0x11}, 20)
+	holder := bytes.Repeat([]byte{0x22}, 20)
+	eoa := bytes.Repeat([]byte{0x44}, 20)
+	nobody := bytes.Repeat([]byte{0x66}, 20)
+	storage := newTestTrie([][]byte{mappingSlotForAddress(holder, 0)}, [][]byte{storageValue(1000)})
+	codeHash := keccak256([]byte{0x60, 0x80})
+	state := newTestTrie([][]byte{token, eoa}, [][]byte{
+		rlpEncodeAccount(1, big.NewInt(0), storage.root(), codeHash),
+		rlpEncodeAccount(4, big.NewInt(50), emptyTrieRoot, emptyCodeHash),
+	})
+	tokenState := wireAccountState{Nonce: 1, Balance: make([]int, 32), StorageHash: toInts(storage.root()), CodeHash: toInts(codeHash)}
+	eoaState := wireAccountState{Nonce: 4, Balance: toInts(word(50)), StorageHash: toInts(emptyTrieRoot), CodeHash: toInts(emptyCodeHash)}
+	absent := wireAccountState{Balance: make([]int, 32), StorageHash: toInts(emptyTrieRoot), CodeHash: toInts(emptyCodeHash)}
+	gethEmpty := wireAccountState{Balance: make([]int, 32), StorageHash: make([]int, 32), CodeHash: make([]int, 32)}
+	empty := newTestTrie(nil, nil)
+
+	balance := func(address []byte, claim wireAccountState, storage *testTrie, balanceSlot byte, value int64, mode EthProofMode) (*big.Int, error) {
+		p := testStateProof(state, address, claim, storage, [][]byte{mappingSlotForAddress(holder, balanceSlot)}, []int64{value})
+		eth, _ := ethServer(t, &wireEnvelope{StateRoot: p.StateRoot, BlockRange: [2]uint64{9, 9}, StateProofs: []wireStateProof{p}})
+		eth.Mode = mode
+		return eth.Erc20Balance(ctx, "0x"+hex.EncodeToString(address), "0x"+hex.EncodeToString(holder), balanceSlot, 9)
+	}
+
+	if got, err := balance(token, tokenState, storage, 0, 1000, EthWalkProofs); err != nil || got.Int64() != 1000 {
+		t.Fatalf("the token's balance: %v, %v", got, err)
+	}
+	if got, err := balance(token, tokenState, storage, 1, 0, EthWalkProofs); err != nil || got.Sign() != 0 {
+		t.Fatalf("a wrong balance slot: %v, %v; want zero", got, err)
+	}
+	for name, read := range map[string]func() (*big.Int, error){
+		"an account without code":           func() (*big.Int, error) { return balance(eoa, eoaState, empty, 0, 0, EthWalkProofs) },
+		"an account without code, unwalked": func() (*big.Int, error) { return balance(eoa, eoaState, empty, 0, 0, EthSkipProofs) },
+		"no account":                        func() (*big.Int, error) { return balance(nobody, absent, empty, 0, 0, EthWalkProofs) },
+		"no account, zero hashes":           func() (*big.Int, error) { return balance(nobody, gethEmpty, empty, 0, 0, EthWalkProofs) },
+	} {
+		if got, err := read(); err == nil || !contains(err.Error(), "no contract") {
+			t.Errorf("%s: %v, %v; want a refusal", name, got, err)
 		}
 	}
 }

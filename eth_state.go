@@ -301,7 +301,11 @@ func (e *EthOperations) GetCall(
 
 // Erc20Balance returns balanceOf(holder) for a token whose balance
 // mapping lives at slot balanceSlot, as the indexer reports it (see
-// EthOperations): the value of the slot GetState asked for.
+// EthOperations): the value of the slot GetState asked for. It returns an
+// error when there is no contract at token: its account doesn't exist, or
+// has no code. It can't tell whether balanceSlot is the token's balance
+// mapping: a wrong balanceSlot reads a slot the token never set, which reads
+// as zero.
 func (e *EthOperations) Erc20Balance(
 	ctx context.Context,
 	token, holder string,
@@ -316,6 +320,11 @@ func (e *EthOperations) Erc20Balance(
 	state, err := e.GetState(ctx, token, []string{"0x" + hex.EncodeToString(slot)}, blockNumber)
 	if err != nil {
 		return nil, err
+	}
+	// An account that doesn't exist reads with the empty code hash or the
+	// zero hash, as one without code does.
+	if state.CodeHash == "0x"+hex.EncodeToString(emptyCodeHash) || state.CodeHash == "0x"+strings.Repeat("00", 32) {
+		return nil, fmt.Errorf("erc20Balance: no contract at %s: its account doesn't exist or has no code", state.Address)
 	}
 	if len(state.Storage) != 1 {
 		return nil, errors.New("erc20Balance: no storage value for the balance slot")

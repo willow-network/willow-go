@@ -524,7 +524,9 @@ endpoints the light client took it from, not verified against the validators.
   has no trusted source of Ethereum block headers, so it can't check that the
   root is Ethereum's: every result is the indexer's claim. A zero slot value
   is proved by the slot's absence from the storage trie, and an account that
-  doesn't exist by its absence from the state trie (it reads as empty). An
+  doesn't exist by its absence from the state trie (it reads as empty).
+  `Erc20Balance` refuses a token address with no contract (no account, or no
+  code), but can't tell a wrong balance slot, which reads as zero. An
   `eth_call`'s result is bound by no proof.
 - File downloads: `Files.Download` checks the chunks against the manifest's
   chunk Merkle root and content hash, with the manifest as the API sends it,
