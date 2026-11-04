@@ -93,11 +93,17 @@ func main() {
 		"verified":  true,
 	}
 
-	err = client.Data.StoreItem(ctx, "secure-data", "entry-1", testData)
+	write, err := client.Data.StoreItem(ctx, "secure-data", "entry-1", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Data stored")
+		// Submitted: CheckTx accepted it. Wait for it to land before reading.
+		fmt.Printf("   Submitted (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+			fmt.Printf("   Note: %v\n", err)
+		}
+		cancel()
 	}
 
 	// 6. Retrieve the data, then its proof. The proof is of the state after

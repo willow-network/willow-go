@@ -78,9 +78,13 @@ func TestStoreItemSignsTheStoreDataItSends(t *testing.T) {
 		t.Run(string(alg), func(t *testing.T) {
 			srv, txs := txServer(t, 6)
 			client, id := clientFor(t, srv, alg)
-			if err := client.Data.StoreItem(context.Background(), "sg-1", "doc1",
-				map[string]interface{}{"value": 42, "title": "Hello"}); err != nil {
+			write, err := client.Data.StoreItem(context.Background(), "sg-1", "doc1",
+				map[string]interface{}{"value": 42, "title": "Hello"})
+			if err != nil {
 				t.Fatal(err)
+			}
+			if *write != (WriteResult{DID: id.DID(), Nonce: 7, TxHash: "AB"}) {
+				t.Fatalf("StoreItem = %+v", write)
 			}
 			var tx consensus.DataStoreTx
 			if err := json.Unmarshal(sentTx(t, txs, "StoreData"), &tx); err != nil {
@@ -104,10 +108,10 @@ func TestStoreItemSignsTheStoreDataItSends(t *testing.T) {
 
 	srv, txs := txServer(t, 6)
 	client, _ := clientFor(t, srv, Ed25519)
-	if err := client.Data.StoreItem(context.Background(), "sg", "k\n", map[string]interface{}{}); !IsValidationError(err) {
+	if _, err := client.Data.StoreItem(context.Background(), "sg", "k\n", map[string]interface{}{}); !IsValidationError(err) {
 		t.Errorf("key with a line break: %v, want a validation error", err)
 	}
-	if err := client.Data.StoreItem(context.Background(), "sg", "k", nil); !IsValidationError(err) {
+	if _, err := client.Data.StoreItem(context.Background(), "sg", "k", nil); !IsValidationError(err) {
 		t.Errorf("nil data: %v, want a validation error", err)
 	}
 	if len(*txs) != 0 {
@@ -120,8 +124,12 @@ func TestStoreItemSignsTheStoreDataItSends(t *testing.T) {
 func TestDeleteSubgroveSendsADeregisterSubgrove(t *testing.T) {
 	srv, txs := txServer(t, 20)
 	client, id := clientFor(t, srv, Ed25519)
-	if err := client.Registration.DeleteSubgrove(context.Background(), "sg"); err != nil {
+	write, err := client.Registration.DeleteSubgrove(context.Background(), "sg")
+	if err != nil {
 		t.Fatal(err)
+	}
+	if write.Nonce != 21 || write.TxHash != "AB" {
+		t.Fatalf("DeleteSubgrove = %+v", write)
 	}
 	var tx consensus.DeregisterSubgroveTx
 	if err := json.Unmarshal(sentTx(t, txs, "DeregisterSubgrove"), &tx); err != nil {

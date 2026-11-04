@@ -94,11 +94,18 @@ func TestEveryEnvelopeRouteYieldsItsData(t *testing.T) {
 	if root, err := client.GetRootHash(ctx); err != nil || root != "aa11" {
 		t.Errorf("GetRootHash = %q, %v", root, err)
 	}
+	if root, err := client.GetLatestAppHash(ctx); err != nil || root != "BB22" {
+		t.Errorf("GetLatestAppHash = %q, %v", root, err)
+	}
 	if root, err := client.GetVerifiedRootHash(ctx); err != nil || root != "BB22" {
 		t.Errorf("GetVerifiedRootHash = %q, %v", root, err)
 	}
-	if nonce, err := client.nextTxNonce(ctx, "did:willow:a"); err != nil || nonce != 18446744073709551615 {
-		t.Errorf("nextTxNonce = %d, %v", nonce, err)
+	if state, err := client.GetAccountNonce(ctx, "did:willow:a"); err != nil || state.Base != 18446744073709551614 || state.Used != 0 {
+		t.Errorf("GetAccountNonce = %+v, %v", state, err)
+	}
+	// No nonce above that base is one the chain accepts.
+	if _, err := client.NextNonce(ctx, "did:willow:a"); !errors.Is(err, ErrNonceWindowFull) {
+		t.Errorf("NextNonce at the top of the range: %v, want ErrNonceWindowFull", err)
 	}
 
 	for name, get := range map[string]func(context.Context, string, string) (*DataResponse, error){

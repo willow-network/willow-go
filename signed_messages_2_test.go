@@ -453,6 +453,52 @@ func TestChainSchemaJSONRefusesIndexes(t *testing.T) {
 	}
 }
 
+// The schema a registration carries parses as the chain's SchemaDefinition:
+// {version: u32, fields: map of name to FieldType, indexes, required_fields},
+// FieldType one of its lowercase unit variants, and no other key.
+func TestChainSchemaJSONIsTheChainsSchemaDefinition(t *testing.T) {
+	chainFieldTypes := map[string]bool{"string": true, "number": true, "boolean": true, "array": true, "object": true, "bytes": true}
+	schema := NewSchemaBuilder("S").StringField("s", true).IntField("i", false).FloatField("f", false).
+		BoolField("b", true).ArrayField("a", "string", false).ObjectField("o", false).
+		Field("n", "Number", false, false).Field("x", "bytes", false, false).Field("l", "array", false, false).
+		Field("ig", "integer", false, false).Field("bo", "boolean", false, false).Build()
+	for _, s := range []*SchemaDefinition{schema, {}} {
+		text, err := s.ChainSchemaJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var parsed struct {
+			Version uint32            `json:"version"`
+			Fields  map[string]string `json:"fields"`
+			Indexes []struct {
+				Name   string   `json:"name"`
+				Fields []string `json:"fields"`
+				Unique bool     `json:"unique"`
+			} `json:"indexes"`
+			RequiredFields []string `json:"required_fields"`
+		}
+		dec := json.NewDecoder(strings.NewReader(text))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&parsed); err != nil {
+			t.Fatalf("%s: %v", text, err)
+		}
+		if parsed.Version != 1 || parsed.Fields == nil || parsed.Indexes == nil || parsed.RequiredFields == nil {
+			t.Fatalf("%s: want version 1 and every field present", text)
+		}
+		if len(parsed.Fields) != len(s.Fields) {
+			t.Fatalf("%s: %d fields, want %d", text, len(parsed.Fields), len(s.Fields))
+		}
+		for name, fieldType := range parsed.Fields {
+			if !chainFieldTypes[fieldType] {
+				t.Errorf("%s: field %s has type %q, not one of the chain's", text, name, fieldType)
+			}
+		}
+	}
+	if got, err := schema.ChainSchemaJSON(); err != nil || !strings.Contains(got, `"required_fields":["s","b"]`) {
+		t.Fatalf("required fields: %s, %v", got, err)
+	}
+}
+
 // txServer is a mocked API that reports the account nonce for did:willow:a and
 // records each transaction posted to /tx/submit as raw JSON.
 func txServer(t *testing.T, accountNonce uint64) (*httptest.Server, *[]map[string]json.RawMessage) {
@@ -535,7 +581,7 @@ func TestGrantSubgroveKeySignsTheTransactionItSends(t *testing.T) {
 		t.Run(string(alg), func(t *testing.T) {
 			srv, txs := txServer(t, kat.Nonce-1)
 			client, id := clientFor(t, srv, alg)
-			if err := client.Privacy.GrantSubgroveKey(context.Background(), kat.SubgroveID, kat.EncryptedKeyGrant); err != nil {
+			if _, err := client.Privacy.GrantSubgroveKey(context.Background(), kat.SubgroveID, kat.EncryptedKeyGrant); err != nil {
 				t.Fatal(err)
 			}
 			unsigned, signature := withEmptySignature(t, sentTx(t, txs, "GrantSubgroveKey"))
@@ -567,7 +613,7 @@ func TestRotateSubgroveKeySignsTheTransactionItSends(t *testing.T) {
 		t.Run(string(alg), func(t *testing.T) {
 			srv, txs := txServer(t, kat.Nonce-1)
 			client, id := clientFor(t, srv, alg)
-			if err := client.Privacy.RotateSubgroveKey(context.Background(), kat.SubgroveID, kat.NewEpoch, kat.NewGrants); err != nil {
+			if _, err := client.Privacy.RotateSubgroveKey(context.Background(), kat.SubgroveID, kat.NewEpoch, kat.NewGrants); err != nil {
 				t.Fatal(err)
 			}
 			unsigned, signature := withEmptySignature(t, sentTx(t, txs, "RotateSubgroveKey"))
@@ -591,7 +637,7 @@ func TestRotateSubgroveKeySignsTheTransactionItSends(t *testing.T) {
 	// A rotation with no grants sends an empty list, which the chain decodes.
 	srv, txs := txServer(t, 1)
 	client, _ := clientFor(t, srv, Ed25519)
-	if err := client.Privacy.RotateSubgroveKey(context.Background(), "p1", 2, nil); err != nil {
+	if _, err := client.Privacy.RotateSubgroveKey(context.Background(), "p1", 2, nil); err != nil {
 		t.Fatal(err)
 	}
 	var fields map[string]json.RawMessage
@@ -649,12 +695,12 @@ func TestRegisterSubgroveSignsTheTransactionItSends(t *testing.T) {
 			srv, txs := txServer(t, 3)
 			client, id := clientFor(t, srv, alg)
 			req := NewSubgroveBuilder("sg-1", "").Owner(id.DID()).Build()
-			reg, err := client.Registration.RegisterSubgrove(context.Background(), req)
+			write, err := client.Registration.RegisterSubgrove(context.Background(), req)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if reg.SubgroveID != "sg-1" || reg.OwnerDid != id.DID() {
-				t.Fatalf("registration %+v", reg)
+			if *write != (WriteResult{DID: id.DID(), Nonce: 4, TxHash: "AB"}) {
+				t.Fatalf("RegisterSubgrove = %+v", write)
 			}
 			body := sentTx(t, txs, "RegisterSubgrove")
 			unsigned, signature := withEmptySignature(t, body)

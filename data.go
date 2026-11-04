@@ -28,46 +28,45 @@ func (d *DataOperations) Store(ctx context.Context, subgroveID string, data map[
 // data is sent as its JSON text (encoding/json, object keys sorted) carried as
 // bytes, and the signature binds those exact bytes with the subgrove, key,
 // owner, and the transaction's nonce (see FormatDataStoreMessage). The nonce is
-// one past the identity's account nonce, so send a DID's next write after this
-// one has landed: until then the next write would take the same nonce, which
-// the chain holds for the pending transaction. A nil error means the chain's
-// CheckTx accepted the transaction; the write is applied, or refused, in its
-// block.
-func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, data map[string]interface{}) error {
+// the lowest free one in the identity's window (see Client.NextNonce), so
+// writes in flight together take distinct nonces; at most 24 can be in flight
+// per identity. StoreItem returns once the chain's CheckTx accepts the
+// transaction, with the nonce and transaction hash; the write is applied, or
+// refused, in its block (see Client.WaitUntilLanded). A failure after the
+// transaction was signed is a *WriteError naming its nonce.
+func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, data map[string]interface{}) (*WriteResult, error) {
 	if err := d.client.RequireAuth(); err != nil {
-		return err
+		return nil, err
 	}
 	if data == nil {
-		return NewValidationError("StoreItem: data must be a JSON object, not nil")
+		return nil, NewValidationError("StoreItem: data must be a JSON object, not nil")
 	}
 	body, err := json.Marshal(data)
 	if err != nil {
-		return NewSerializationError("failed to encode the data", err)
+		return nil, NewSerializationError("failed to encode the data", err)
 	}
 
 	identity := d.client.GetIdentity()
-	nonce, err := d.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-	message, err := FormatDataStoreMessage(subgroveID, key, identity.DID(), body, nonce)
-	if err != nil {
-		return err
-	}
-	signature, err := identity.Sign([]byte(message))
-	if err != nil {
-		return err
-	}
-	return d.client.submitTx(ctx, map[string]interface{}{
-		"StoreData": consensus.DataStoreTx{
-			SubgroveID:  subgroveID,
-			Key:         key,
-			Data:        body,
-			OwnerDid:    identity.DID(),
-			Signature:   signature,
-			PublicKeyID: identity.PublicKeyID(),
-			Nonce:       nonce,
-		},
+	return d.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		message, err := FormatDataStoreMessage(subgroveID, key, identity.DID(), body, nonce)
+		if err != nil {
+			return nil, err
+		}
+		signature, err := identity.Sign([]byte(message))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"StoreData": consensus.DataStoreTx{
+				SubgroveID:  subgroveID,
+				Key:         key,
+				Data:        body,
+				OwnerDid:    identity.DID(),
+				Signature:   signature,
+				PublicKeyID: identity.PublicKeyID(),
+				Nonce:       nonce,
+			},
+		}, nil
 	})
 }
 
@@ -120,9 +119,13 @@ func (d *DataOperations) Delete(ctx context.Context, subgroveID, key string) err
 
 // BatchStore returns an unsupported-operation error and sends nothing: the API
 // serves no batch write route. Store each item with StoreItem, which sends one
-// StoreData transaction per item.
+// StoreData transaction per item under its own nonce; at most 24 can be in
+// flight per identity, so past that wait for earlier ones to land
+// (Client.WaitUntilLanded).
 func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, items []StoreRequest) error {
-	return NewUnsupportedError("BatchStore: the API serves no batch write route; store each item with StoreItem, one StoreData transaction per item")
+	return NewUnsupportedError("BatchStore: the API serves no batch write route; store each item with StoreItem, " +
+		"one StoreData transaction per item under its own nonce; at most 24 can be in flight per identity, " +
+		"so past that wait for earlier ones to land (WaitUntilLanded)")
 }
 
 // Query returns an unsupported-operation error and sends nothing.

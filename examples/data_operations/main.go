@@ -53,17 +53,20 @@ func main() {
 		"in_stock": true,
 	}
 
-	err = client.Data.StoreItem(ctx, subgroveID, "product-1", product1)
+	write, err := client.Data.StoreItem(ctx, subgroveID, "product-1", product1)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Sent product-1")
-		waitForKey(ctx, client, subgroveID, "product-1")
+		// Submitted: CheckTx accepted it. It is applied, or refused, in its
+		// block; wait for its nonce to land before reading it back.
+		fmt.Printf("   Submitted product-1 (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitForNonce(ctx, client, write)
 	}
 
 	// 2. Store more items. The API has no batch write: each item is its own
-	// StoreData transaction, signed under the account's next nonce, so each is
-	// sent after the previous one has landed.
+	// StoreData transaction under its own nonce, so they can be in flight
+	// together (up to 24 per identity) and land in any order. Wait for each
+	// nonce to land before reading them.
 	fmt.Println("\n2. Storing more items...")
 	items := []willow.StoreRequest{
 		{
@@ -95,13 +98,18 @@ func main() {
 		},
 	}
 
+	var writes []*willow.WriteResult
 	for _, item := range items {
-		if err := client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data); err != nil {
+		write, err := client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data)
+		if err != nil {
 			fmt.Printf("   Note: %s: %v\n", item.Key, err)
 			continue
 		}
-		fmt.Printf("   Sent %s\n", item.Key)
-		waitForKey(ctx, client, subgroveID, item.Key)
+		fmt.Printf("   Submitted %s (nonce %d)\n", item.Key, write.Nonce)
+		writes = append(writes, write)
+	}
+	for _, write := range writes {
+		waitForNonce(ctx, client, write)
 	}
 
 	// 3. Get (the API's data route carries no proof; GetProof fetches one)
@@ -178,18 +186,20 @@ func main() {
 		fmt.Println("   Deleted product-3")
 	}
 
-	// 9. Compare root hashes
+	// 9. Compare root hashes. Both are the API's values, unverified: the app
+	// hash of the latest block as its CometBFT node reports it, and its
+	// database's current root.
 	fmt.Println("\n9. Comparing root hashes...")
-	verifiedRoot, err1 := client.GetVerifiedRootHash(ctx)
+	appHash, err1 := client.GetLatestAppHash(ctx)
 	localRoot, err2 := client.GetRootHash(ctx)
 
 	if err1 == nil && err2 == nil {
-		fmt.Printf("   Verified root: %s...\n", truncate(verifiedRoot, 16))
-		fmt.Printf("   Local root:    %s...\n", truncate(localRoot, 16))
-		if verifiedRoot == localRoot {
-			fmt.Println("   Node is in sync with consensus")
+		fmt.Printf("   Latest app hash: %s...\n", truncate(appHash, 16))
+		fmt.Printf("   Local root:      %s...\n", truncate(localRoot, 16))
+		if appHash == localRoot {
+			fmt.Println("   The node's database root matches the latest app hash")
 		} else {
-			fmt.Println("   Node has pending changes")
+			fmt.Println("   The node's database root differs from the latest app hash")
 		}
 	} else {
 		fmt.Println("   Could not retrieve root hashes")
@@ -198,15 +208,17 @@ func main() {
 	fmt.Println("\nData operations example complete!")
 }
 
-// waitForKey polls for a stored key until its write has landed, or 30 s pass.
-func waitForKey(ctx context.Context, client *willow.Client, subgroveID, key string) {
-	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(time.Second) {
-		if _, err := client.Data.GetUnverified(ctx, subgroveID, key); err == nil {
-			fmt.Printf("   %s landed\n", key)
-			return
-		}
+// waitForNonce waits up to 30 s for the chain to show a write's nonce used:
+// the write landed in a block. A write refused in its block also uses its
+// nonce, so read what it wrote to know it took effect.
+func waitForNonce(ctx context.Context, client *willow.Client, write *willow.WriteResult) {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+		fmt.Printf("   Note: %v\n", err)
+		return
 	}
-	fmt.Printf("   %s has not landed after 30 s\n", key)
+	fmt.Printf("   Nonce %d landed\n", write.Nonce)
 }
 
 func truncate(s string, maxLen int) string {

@@ -68,14 +68,6 @@ nonce. (RevokeSubgroveKey and DeregisterSubgrove sign
 `RevokeSubgroveKey:<subgrove>:<revokee>:<sender>:<nonce>` and
 `DeregisterSubgrove:<subgrove>:<owner>:<nonce>`, which bind every field.)
 
-The client's write methods take the nonce one past the account nonce at
-`/account/{did}/nonce`. Until a write lands, the next write would take the
-same nonce, which the chain holds for the pending transaction, so a DID's
-writes go one at a time, each after the previous has landed. To have several
-in flight, sign them under distinct unused nonces from the account's window
-(up to 24 above the account nonce) and send them with
-`consensus.Client.BroadcastTxSync`.
-
 | Kind | Builder | Lines after the kind |
 |---|---|---|
 | StoreData | `FormatDataStoreMessage` | `Subgrove`, `Key`, `Owner`, `DataHash` (SHA-256 of the data bytes sent), `Nonce` |
@@ -99,6 +91,41 @@ schema indexes (see Subgrove Management).
 
 Ed25519 signs the message's UTF-8 bytes. secp256k1 signs their Keccak-256
 (low-S; the SDK sends DER, and the chain also accepts 64-byte compact r||s).
+
+## Nonces
+
+The chain accepts a nonce in `base+1 … base+24` that it hasn't used, where
+`base` (the account nonce) advances only over used nonces with no gap below
+them. The client keeps, per signing DID, the nonces it has handed out that
+haven't landed (each held for 120 s, the longest the node holds a pending
+transaction's nonce) and the nonces it has seen used, and each write takes
+the lowest nonce in the window that is neither, under a lock, so writes in
+flight together take distinct nonces. With `WithRPCURL` it reads which nonces
+above the base are used from the ABCI query
+`/store/account_nonce_state/{did}`; otherwise it reads the base from the
+API's `/account/{did}/nonce`. With all 24 held, a write fails with an error
+wrapping `willow.ErrNonceWindowFull` and sends nothing: wait for earlier
+writes to land.
+
+A write returns a `*willow.WriteResult` (`DID`, `Nonce`, `TxHash`) once
+CheckTx accepts it. `client.WaitUntilLanded(ctx, did, nonce)` waits until the
+chain shows the nonce used; writes in flight may land in any order, so send a
+write that depends on another only after the first has landed. A write
+refused in its block also uses its nonce (every kind the SDK sends except
+DeregisterSubgrove, whose refusal leaves the nonce unused): read what it
+wrote to know it took effect. `client.GetAccountNonce` reads the account's
+nonce state, and `client.NextNonce` hands out a nonce for a transaction the
+client doesn't build (a file write's `FileSigningOptions.Nonce`, or one sent
+with `consensus.Client.BroadcastTxSync`).
+
+A refusal at CheckTx gives its nonce back, unless it says the nonce is held
+by a pending transaction (the write fails and the nonce stays held) or
+already used or spent (the write is signed again under the next free nonce:
+no transaction under the used one can run). A write whose submission fails
+in transit (a network error or a 5xx) may still land: its error is a
+`*willow.WriteError` with `MayLand` set, naming the nonce. Wait for that
+nonce and read what the write wrote before sending it again, or it can run
+twice.
 
 ## Quick Start
 
@@ -139,12 +166,13 @@ func main() {
     // Set identity for per-request signing
     client.SetIdentity(identity)
 
-    // Read the chain's state root
-    root, err := client.GetVerifiedRootHash(ctx)
+    // The latest block's app hash, as the API's CometBFT node reports it.
+    // This is the API's value: the SDK doesn't verify it.
+    appHash, err := client.GetLatestAppHash(ctx)
     if err != nil {
         log.Fatal(err)
     }
-    fmt.Println("Verified root hash:", root)
+    fmt.Println("Latest app hash (unverified):", appHash)
 }
 ```
 
@@ -232,10 +260,13 @@ headers, err := identity.SignRequestWithNonce("POST", "/query/my-subgrove", body
 ```go
 // Store an object under a key: a StoreData transaction signed by the
 // identity, carrying the object's JSON text as bytes
-err := client.Data.StoreItem(ctx, "users", "user-123", map[string]interface{}{
+write, err := client.Data.StoreItem(ctx, "users", "user-123", map[string]interface{}{
     "name":  "Alice",
     "email": "alice@example.com",
 })
+
+// Wait for it to land before reading it back
+err = client.WaitUntilLanded(ctx, write.DID, write.Nonce)
 
 // Read the stored value (the API's data route carries no proof)
 response, err := client.Data.Get(ctx, "users", "user-123")
@@ -245,9 +276,9 @@ proof, err := client.Data.GetProof(ctx, "users", "user-123")
 ```
 
 `StoreItem` returns once the chain's CheckTx accepts the transaction; the
-write is applied, or refused, in its block. Each item is its own transaction,
-sent after the previous one has landed (see Signed transactions). The SDK
-doesn't build UpdateData or DeleteData
+write is applied, or refused, in its block. Each item is its own transaction
+under its own nonce, so up to 24 can be in flight per identity (see Nonces).
+The SDK doesn't build UpdateData or DeleteData
 transactions, so `Data.Update` and `Data.Delete` return an unsupported
 error, as do `Data.Store` (a StoreData needs a key) and `Data.BatchStore`.
 
@@ -292,10 +323,13 @@ subgroveReq := willow.NewSubgroveBuilder("users", "Users").
     AddWriter(identity.DID()).
     Build()
 
-subgrove, err := client.Registration.RegisterSubgrove(ctx, subgroveReq)
+write, err := client.Registration.RegisterSubgrove(ctx, subgroveReq)
+
+// The subgrove exists once the registration lands
+err = client.WaitUntilLanded(ctx, write.DID, write.Nonce)
 
 // Deregister it (a DeregisterSubgrove transaction; the chain refunds its balance)
-err = client.Registration.DeleteSubgrove(ctx, "users")
+_, err = client.Registration.DeleteSubgrove(ctx, "users")
 ```
 
 The schema is sent in the chain's form (`SchemaDefinition.ChainSchemaJSON`):
@@ -321,7 +355,7 @@ tx := &consensus.RegisterSubgroveTx{
         Writers: []string{identity.DID()},
     }},
     PublicKeyID: identity.PublicKeyID(),
-    Nonce:       nonce, // one past the account nonce at /account/{did}/nonce
+    Nonce:       nonce, // from client.NextNonce(ctx, identity.DID())
 }
 message, err := willow.FormatRegisterSubgroveMessage(tx)
 tx.Signature, err = identity.Sign([]byte(message))

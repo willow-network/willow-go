@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -64,11 +65,20 @@ func main() {
 		"active": true,
 	}
 
-	err = client.Data.StoreItem(ctx, "users", "alice", testData)
+	write, err := client.Data.StoreItem(ctx, "users", "alice", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Data stored successfully")
+		// Submitted: CheckTx accepted it. It is applied, or refused, in its
+		// block, so wait for it to land before reading it back.
+		fmt.Printf("   Submitted (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+			fmt.Printf("   Note: %v\n", err)
+		} else {
+			fmt.Println("   Landed")
+		}
+		cancel()
 	}
 
 	// 6. Retrieve data (the API's data route carries no proof; GetProof

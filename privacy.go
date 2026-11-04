@@ -109,43 +109,34 @@ type grantSubgroveKeyRequest struct {
 // GrantSubgroveKey broadcasts a GrantSubgroveKey transaction, granting the
 // specified DID access to the subgrove's encryption key. It is signed over
 // FormatGrantSubgroveKeyMessage, which binds every field of the grant and the
-// transaction's nonce.
-func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant) error {
+// transaction's nonce (see Client.NextNonce). It returns once CheckTx accepts
+// the transaction, with the nonce and transaction hash.
+func (p *PrivacyOperations) GrantSubgroveKey(ctx context.Context, subgroveID string, grant EncryptedKeyGrant) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
-		return err
+		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-
-	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-
-	message, err := FormatGrantSubgroveKeyMessage(subgroveID, identity.DID(), grant, nonce)
-	if err != nil {
-		return err
-	}
-
-	signature, err := identity.Sign([]byte(message))
-	if err != nil {
-		return err
-	}
-
-	req := grantSubgroveKeyRequest{
-		SubgroveID:        subgroveID,
-		EncryptedKeyGrant: grant,
-		SenderDID:         identity.DID(),
-		Signature:         signature,
-		PublicKeyID:       identity.PublicKeyID(),
-		Nonce:             nonce,
-	}
-
-	tx := map[string]interface{}{
-		"GrantSubgroveKey": req,
-	}
-
-	return p.client.submitTx(ctx, tx)
+	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		message, err := FormatGrantSubgroveKeyMessage(subgroveID, identity.DID(), grant, nonce)
+		if err != nil {
+			return nil, err
+		}
+		signature, err := identity.Sign([]byte(message))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"GrantSubgroveKey": grantSubgroveKeyRequest{
+				SubgroveID:        subgroveID,
+				EncryptedKeyGrant: grant,
+				SenderDID:         identity.DID(),
+				Signature:         signature,
+				PublicKeyID:       identity.PublicKeyID(),
+				Nonce:             nonce,
+			},
+		}, nil
+	})
 }
 
 // revokeSubgroveKeyRequest is the internal request body for the RevokeSubgroveKey transaction.
@@ -159,41 +150,32 @@ type revokeSubgroveKeyRequest struct {
 }
 
 // RevokeSubgroveKey broadcasts a RevokeSubgroveKey transaction, revoking
-// the specified DID's access to the subgrove's encryption key.
-func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string) error {
+// the specified DID's access to the subgrove's encryption key. It returns once
+// CheckTx accepts the transaction, with the nonce and transaction hash.
+func (p *PrivacyOperations) RevokeSubgroveKey(ctx context.Context, subgroveID, revokeeDID string) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
-		return err
+		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
-
-	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-
-	message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
-		subgroveID, revokeeDID, identity.DID(), nonce)
-
-	signature, err := identity.Sign([]byte(message))
-	if err != nil {
-		return err
-	}
-
-	req := revokeSubgroveKeyRequest{
-		SubgroveID:  subgroveID,
-		RevokeeDID:  revokeeDID,
-		SenderDID:   identity.DID(),
-		Signature:   signature,
-		PublicKeyID: identity.PublicKeyID(),
-		Nonce:       nonce,
-	}
-
-	tx := map[string]interface{}{
-		"RevokeSubgroveKey": req,
-	}
-
-	return p.client.submitTx(ctx, tx)
+	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		message := fmt.Sprintf("RevokeSubgroveKey:%s:%s:%s:%d",
+			subgroveID, revokeeDID, identity.DID(), nonce)
+		signature, err := identity.Sign([]byte(message))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"RevokeSubgroveKey": revokeSubgroveKeyRequest{
+				SubgroveID:  subgroveID,
+				RevokeeDID:  revokeeDID,
+				SenderDID:   identity.DID(),
+				Signature:   signature,
+				PublicKeyID: identity.PublicKeyID(),
+				Nonce:       nonce,
+			},
+		}, nil
+	})
 }
 
 // rotateSubgroveKeyRequest is the internal request body for the RotateSubgroveKey transaction.
@@ -211,10 +193,11 @@ type rotateSubgroveKeyRequest struct {
 // subgrove encryption key to a new epoch and re-granting access to the
 // specified DIDs with newly encrypted keys. It is signed over
 // FormatRotateSubgroveKeyMessage, which binds every grant, their order and
-// count, and the transaction's nonce.
-func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) error {
+// count, and the transaction's nonce. It returns once CheckTx accepts the
+// transaction, with the nonce and transaction hash.
+func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID string, newEpoch uint32, newGrants []EncryptedKeyGrant) (*WriteResult, error) {
 	if err := p.client.RequireAuth(); err != nil {
-		return err
+		return nil, err
 	}
 
 	identity := p.client.GetIdentity()
@@ -222,35 +205,25 @@ func (p *PrivacyOperations) RotateSubgroveKey(ctx context.Context, subgroveID st
 		// Sent as an empty list: the chain reads new_grants as a list.
 		newGrants = []EncryptedKeyGrant{}
 	}
-
-	nonce, err := p.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-
-	message, err := FormatRotateSubgroveKeyMessage(subgroveID, identity.DID(), newEpoch, newGrants, nonce)
-	if err != nil {
-		return err
-	}
-
-	signature, err := identity.Sign([]byte(message))
-	if err != nil {
-		return err
-	}
-
-	req := rotateSubgroveKeyRequest{
-		SubgroveID:  subgroveID,
-		NewEpoch:    newEpoch,
-		NewGrants:   newGrants,
-		SenderDID:   identity.DID(),
-		Signature:   signature,
-		PublicKeyID: identity.PublicKeyID(),
-		Nonce:       nonce,
-	}
-
-	tx := map[string]interface{}{
-		"RotateSubgroveKey": req,
-	}
-
-	return p.client.submitTx(ctx, tx)
+	return p.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		message, err := FormatRotateSubgroveKeyMessage(subgroveID, identity.DID(), newEpoch, newGrants, nonce)
+		if err != nil {
+			return nil, err
+		}
+		signature, err := identity.Sign([]byte(message))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"RotateSubgroveKey": rotateSubgroveKeyRequest{
+				SubgroveID:  subgroveID,
+				NewEpoch:    newEpoch,
+				NewGrants:   newGrants,
+				SenderDID:   identity.DID(),
+				Signature:   signature,
+				PublicKeyID: identity.PublicKeyID(),
+				Nonce:       nonce,
+			},
+		}, nil
+	})
 }

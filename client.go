@@ -28,6 +28,11 @@ type Client struct {
 	lightClientMu   sync.Mutex
 	lightClientInit bool
 
+	// nonces hands out transaction nonces per signing DID (see NextNonce).
+	nonces *nonceAllocator
+	// noncePollInterval is how often WaitUntilLanded reads the nonce state.
+	noncePollInterval time.Duration
+
 	// Computed fields registry for SDK-side derived field computation
 	computedFields *ComputedFieldRegistry
 
@@ -64,9 +69,11 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		baseURL:        parsedURL,
-		retryConfig:    DefaultRetryConfig(),
-		computedFields: NewComputedFieldRegistry(),
+		baseURL:           parsedURL,
+		retryConfig:       DefaultRetryConfig(),
+		computedFields:    NewComputedFieldRegistry(),
+		nonces:            newNonceAllocator(time.Now),
+		noncePollInterval: time.Second,
 	}
 
 	// Apply options
@@ -134,8 +141,10 @@ func WithIndexerURL(indexerURL string) ClientOption {
 
 // WithRPCURL sets an explicit CometBFT JSON-RPC endpoint (e.g.
 // http://localhost:26657). Used for ABCI store queries such as the
-// completeness anchor. When unset, the endpoint is derived from the API URL by
-// swapping the :3031 REST port for :26657.
+// completeness anchor and, only when set, the account nonce state (see
+// GetAccountNonce), whose bitmap of used nonces lets writes skip them. When
+// unset, the endpoint is derived from the API URL by swapping the :3031 REST
+// port for :26657, and the nonce state is read from the API (its base alone).
 func WithRPCURL(rpcURL string) ClientOption {
 	return func(c *Client) error {
 		parsed, err := url.Parse(strings.TrimSuffix(rpcURL, "/"))
@@ -376,17 +385,27 @@ func (c *Client) GetRootHash(ctx context.Context) (string, error) {
 	return result.RootHash, nil
 }
 
-// GetVerifiedRootHash returns the verified root hash from consensus.
-func (c *Client) GetVerifiedRootHash(ctx context.Context) (string, error) {
+// GetLatestAppHash returns the app hash of the latest block, as the API reads
+// it from its CometBFT node (/state/root-hash/verified). The SDK doesn't
+// verify it: it is the API's value, not checked against the validators'
+// commit signatures.
+func (c *Client) GetLatestAppHash(ctx context.Context) (string, error) {
 	var result struct {
 		RootHash string `json:"root_hash"`
-		Height   int64  `json:"height"`
 	}
 	err := c.getData(ctx, "/state/root-hash/verified", &result)
 	if err != nil {
 		return "", err
 	}
 	return result.RootHash, nil
+}
+
+// GetVerifiedRootHash returns GetLatestAppHash: the API's value, which the
+// SDK doesn't verify.
+//
+// Deprecated: the hash isn't verified; use GetLatestAppHash.
+func (c *Client) GetVerifiedRootHash(ctx context.Context) (string, error) {
+	return c.GetLatestAppHash(ctx)
 }
 
 // LightClient returns the light client, if configured.
@@ -583,33 +602,14 @@ func (c *Client) requestData(ctx context.Context, method, path string, body, res
 	return env.decode(result)
 }
 
-// nextTxNonce returns the nonce the DID's next transaction must carry: one past
-// the account nonce the API reports at /account/{did}/nonce.
-func (c *Client) nextTxNonce(ctx context.Context, did string) (uint64, error) {
-	var account *struct {
-		Nonce uint64 `json:"nonce"`
-	}
-	if err := c.getData(ctx, fmt.Sprintf("/account/%s/nonce", did), &account); err != nil {
-		return 0, err
-	}
-	if account == nil {
-		return 0, NewValidationError("no nonce in /account response")
-	}
-	return account.Nonce + 1, nil
-}
-
-// submitTx posts a JSON transaction to the API's /tx/submit, which hands it to
-// CheckTx, and returns an error unless CheckTx accepted it.
-func (c *Client) submitTx(ctx context.Context, tx interface{}) error {
-	body, err := json.Marshal(tx)
-	if err != nil {
-		return NewSerializationError("failed to marshal transaction", err)
-	}
-	return c.submitTxBytes(ctx, body)
-}
-
-// submitTxBytes is submitTx for a transaction already encoded as JSON.
-func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
+// postTx posts a JSON transaction to the API's /tx/submit, which hands it to
+// CheckTx, once: a transaction that reached the mempool before a 5xx would be
+// sent twice by a retry. It returns the transaction's hash when CheckTx
+// accepted it, an error otherwise, and what the answer leaves did's nonce as:
+// accepted; given back after a 4xx (the API refused the body before CheckTx)
+// or a refusal that doesn't say the nonce is held or used; or unknown after a
+// network error or a 5xx, when the transaction may have reached the node.
+func (c *Client) postTx(ctx context.Context, body []byte, did string, nonce uint64) (string, nonceOutcome, error) {
 	var envelope struct {
 		Success bool `json:"success"`
 		Data    *struct {
@@ -619,38 +619,41 @@ func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
 		} `json:"data"`
 		Error *string `json:"error"`
 	}
-	// Sent once: a transaction that reached the mempool before a 5xx would be
-	// resubmitted by a retry.
 	req, err := c.newAPIRequest(ctx, http.MethodPost, "/tx/submit", body)
 	if err != nil {
-		return err
+		return "", nonceFree, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return NewNetworkError("transaction submission failed", err)
+		return "", nonceUnknown, NewNetworkError("transaction submission failed", err)
 	}
 	defer resp.Body.Close()
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return NewNetworkError("failed to read /tx/submit response", err)
+		return "", nonceUnknown, NewNetworkError("failed to read /tx/submit response", err)
 	}
 	if resp.StatusCode >= 400 {
-		return c.handleErrorResponse(resp.StatusCode, respBody)
+		outcome := nonceUnknown
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout {
+			outcome = nonceFree
+		}
+		return "", outcome, c.handleErrorResponse(resp.StatusCode, respBody)
 	}
 	if err := json.Unmarshal(respBody, &envelope); err != nil {
-		return NewSerializationError("failed to parse /tx/submit response", err)
+		return "", nonceUnknown, NewSerializationError("failed to parse /tx/submit response", err)
 	}
 	if !envelope.Success || envelope.Data == nil {
 		message := "transaction submission failed"
 		if envelope.Error != nil {
 			message = *envelope.Error
 		}
-		return NewTransactionError(message, "", 0)
+		return "", nonceUnknown, NewTransactionError(message, "", 0)
 	}
 	if envelope.Data.Code != 0 {
-		return NewTransactionError(envelope.Data.Log, envelope.Data.TxHash, envelope.Data.Code)
+		return envelope.Data.TxHash, refusalOutcome(envelope.Data.Log, did, nonce),
+			NewTransactionError(envelope.Data.Log, envelope.Data.TxHash, envelope.Data.Code)
 	}
-	return nil
+	return envelope.Data.TxHash, nonceAccepted, nil
 }
 
 // newAPIRequest builds one attempt of a JSON request to the API, signed by the

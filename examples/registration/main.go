@@ -128,10 +128,12 @@ func main() {
 	// 7. Submit the registration: a RegisterSubgrove transaction signed by the
 	// owner. It needs a registered, funded owner DID.
 	fmt.Println("\n7. Submitting registration...")
-	if _, err := client.Registration.RegisterSubgrove(ctx, subgroveReq); err != nil {
+	if write, err := client.Registration.RegisterSubgrove(ctx, subgroveReq); err != nil {
 		fmt.Printf("   Note: %v (likely needs WILL tokens to fund the subgrove)\n", err)
 	} else {
-		fmt.Printf("   Registered: %s\n", subgroveReq.SubgroveID)
+		// Submitted: CheckTx accepted it. The subgrove exists once it lands
+		// (client.WaitUntilLanded) and its block applies it.
+		fmt.Printf("   Submitted %s (nonce %d, tx %s)\n", subgroveReq.SubgroveID, write.Nonce, write.TxHash)
 	}
 
 	// 8. Summary

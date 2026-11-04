@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -64,11 +65,17 @@ func main() {
 		"tags":    []string{"demo", "proof", "verification"},
 	}
 
-	err = client.Data.StoreItem(ctx, subgroveID, "test-key", testData)
+	write, err := client.Data.StoreItem(ctx, subgroveID, "test-key", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Data stored successfully")
+		// Submitted: CheckTx accepted it. Wait for it to land before reading.
+		fmt.Printf("   Submitted (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+			fmt.Printf("   Note: %v\n", err)
+		}
+		cancel()
 	}
 	fmt.Println()
 
@@ -149,20 +156,22 @@ func main() {
 		}
 	}
 
-	verifiedRoot, err := client.GetVerifiedRootHash(ctx)
+	// The latest block's app hash as the API's CometBFT node reports it: the
+	// API's value, which the SDK doesn't verify.
+	appHash, err := client.GetLatestAppHash(ctx)
 	if err != nil {
-		fmt.Printf("   Verified root: Error - %v\n", err)
+		fmt.Printf("   Latest app hash: Error - %v\n", err)
 	} else {
-		if len(verifiedRoot) > 32 {
-			fmt.Printf("   Verified root: %s...\n", verifiedRoot[:32])
+		if len(appHash) > 32 {
+			fmt.Printf("   Latest app hash: %s...\n", appHash[:32])
 		} else {
-			fmt.Printf("   Verified root: %s\n", verifiedRoot)
+			fmt.Printf("   Latest app hash: %s\n", appHash)
 		}
 
-		if localRoot == verifiedRoot {
-			fmt.Println("   Node is in sync with consensus")
+		if localRoot == appHash {
+			fmt.Println("   The node's database root matches the latest app hash")
 		} else {
-			fmt.Println("   Node has pending changes")
+			fmt.Println("   The node's database root differs from the latest app hash")
 		}
 	}
 	fmt.Println()

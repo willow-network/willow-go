@@ -21,18 +21,19 @@ type RegistrationOperations struct {
 // mode named Name whose writers are Writers and whose free readers are
 // Readers. Every other field is sent with its default: no admins, funding,
 // TEE requirement, read pricing, privacy, or template. It is signed over
-// FormatRegisterSubgroveMessage, which binds all of them and the nonce, one
-// past the identity's account nonce. For another mode or those fields, build a
+// FormatRegisterSubgroveMessage, which binds all of them and the nonce (see
+// Client.NextNonce). For another mode or those fields, build a
 // consensus.RegisterSubgroveTx, sign FormatRegisterSubgroveMessage, and send it
 // with consensus.Client.BroadcastTxSync.
 //
 // OwnerDid, when set, must be the identity's DID, and RewardRate must be 0: a
 // DataStorage registration has no reward rate. SubgroveID must be 1 to 64
 // ASCII letters, digits, '-', or '_', starting with a letter or digit, and the
-// schema must declare no indexes, as the chain requires. The registration
-// returned is req as sent; the subgrove exists once the transaction's block
-// commits.
-func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*SubgroveRegistration, error) {
+// schema must declare no indexes, as the chain requires. It returns once the
+// chain's CheckTx accepts the transaction, with the nonce and transaction
+// hash; the subgrove exists once the transaction lands (see
+// Client.WaitUntilLanded) and is applied in its block.
+func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*WriteResult, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
 	}
@@ -54,44 +55,30 @@ func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *Regi
 		return nil, err
 	}
 
-	nonce, err := r.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get nonce: %w", err)
-	}
-	tx := &consensus.RegisterSubgroveTx{
-		SubgroveID:  req.SubgroveID,
-		Name:        req.Name,
-		Description: req.Description,
-		Schema:      schema,
-		OwnerDid:    identity.DID(),
-		Mode: &consensus.SubgroveMode{DataStorage: &consensus.SubgroveDataStorage{
+	return r.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		tx := &consensus.RegisterSubgroveTx{
+			SubgroveID:  req.SubgroveID,
 			Name:        req.Name,
-			Writers:     req.Writers,
-			FreeReaders: req.Readers,
-		}},
-		PublicKeyID: identity.PublicKeyID(),
-		Nonce:       nonce,
-	}
-	message, err := FormatRegisterSubgroveMessage(tx)
-	if err != nil {
-		return nil, err
-	}
-	if tx.Signature, err = identity.Sign([]byte(message)); err != nil {
-		return nil, err
-	}
-	if err := r.client.submitTx(ctx, map[string]interface{}{"RegisterSubgrove": tx}); err != nil {
-		return nil, err
-	}
-
-	return &SubgroveRegistration{
-		SubgroveID:  req.SubgroveID,
-		Name:        req.Name,
-		Description: req.Description,
-		Schema:      req.Schema,
-		OwnerDid:    identity.DID(),
-		Writers:     req.Writers,
-		Readers:     req.Readers,
-	}, nil
+			Description: req.Description,
+			Schema:      schema,
+			OwnerDid:    identity.DID(),
+			Mode: &consensus.SubgroveMode{DataStorage: &consensus.SubgroveDataStorage{
+				Name:        req.Name,
+				Writers:     req.Writers,
+				FreeReaders: req.Readers,
+			}},
+			PublicKeyID: identity.PublicKeyID(),
+			Nonce:       nonce,
+		}
+		message, err := FormatRegisterSubgroveMessage(tx)
+		if err != nil {
+			return nil, err
+		}
+		if tx.Signature, err = identity.Sign([]byte(message)); err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{"RegisterSubgrove": tx}, nil
+	})
 }
 
 // GetSubgrove retrieves information about a subgrove. The API's
@@ -129,28 +116,27 @@ func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, subgroveID 
 // DeleteSubgrove deregisters a subgrove owned by the client's identity by
 // sending a signed DeregisterSubgrove transaction to POST /tx/submit (see
 // consensus.DeregisterSubgroveSignMessage); the chain refunds its remaining
-// balance to the owner.
-func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string) error {
+// balance to the owner. It returns once CheckTx accepts the transaction, with
+// the nonce and transaction hash.
+func (r *RegistrationOperations) DeleteSubgrove(ctx context.Context, subgroveID string) (*WriteResult, error) {
 	if err := r.client.RequireAuth(); err != nil {
-		return err
+		return nil, err
 	}
 	identity := r.client.GetIdentity()
-	nonce, err := r.client.nextTxNonce(ctx, identity.DID())
-	if err != nil {
-		return fmt.Errorf("failed to get nonce: %w", err)
-	}
-	signature, err := identity.Sign([]byte(consensus.DeregisterSubgroveSignMessage(subgroveID, identity.DID(), nonce)))
-	if err != nil {
-		return err
-	}
-	return r.client.submitTx(ctx, map[string]interface{}{
-		"DeregisterSubgrove": consensus.DeregisterSubgroveTx{
-			SubgroveID:  subgroveID,
-			OwnerDid:    identity.DID(),
-			Signature:   signature,
-			PublicKeyID: identity.PublicKeyID(),
-			Nonce:       nonce,
-		},
+	return r.client.signedWrite(ctx, identity.DID(), func(nonce uint64) (interface{}, error) {
+		signature, err := identity.Sign([]byte(consensus.DeregisterSubgroveSignMessage(subgroveID, identity.DID(), nonce)))
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"DeregisterSubgrove": consensus.DeregisterSubgroveTx{
+				SubgroveID:  subgroveID,
+				OwnerDid:    identity.DID(),
+				Signature:   signature,
+				PublicKeyID: identity.PublicKeyID(),
+				Nonce:       nonce,
+			},
+		}, nil
 	})
 }
 

@@ -25,10 +25,12 @@ type FileSigningOptions struct {
 	OwnerDID    string
 	PublicKeyID string
 	SignFunc    func(message []byte) (string, error) // returns hex-encoded signature
-	// Nonce is the transaction's nonce, one past the owner's account nonce.
-	// The signed message binds it. A write the chain refuses in its block
-	// after its signature and nonce verify still spends the nonce, so a retry
-	// takes the next free nonce and is signed anew.
+	// Nonce is the transaction's nonce, which the signed message binds. Take
+	// it with Client.NextNonce(ctx, OwnerDID), so that it is free in the
+	// account's window and no other write from the client takes it while this
+	// one is in flight. A write the chain refuses in its block after its
+	// signature and nonce verify still spends the nonce, so a retry then takes
+	// a fresh nonce and is signed anew.
 	Nonce uint64
 }
 
@@ -132,7 +134,7 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal manifest tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	if err := f.client.submitSigned(context.Background(), fields.OwnerDID, fields.Nonce, txBody); err != nil {
 		return nil, fmt.Errorf("failed to broadcast manifest tx: %w", err)
 	}
 
@@ -294,7 +296,7 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	if err := f.client.submitSigned(context.Background(), ownerDID, nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast delete tx: %w", err)
 	}
 	return nil
@@ -302,9 +304,9 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 
 // UnregisterStorageNode submits an UnregisterStorageNode transaction to consensus.
 // The signing options are required for this transaction: SignFunc signs as
-// the node's DID, and Nonce is the transaction's nonce, one past the node's
-// account nonce. It is signed over FormatUnregisterStorageNodeMessage, which
-// binds the node and the nonce.
+// the node's DID, and Nonce is the transaction's nonce (take it with
+// Client.NextNonce(ctx, nodeDID)). It is signed over
+// FormatUnregisterStorageNodeMessage, which binds the node and the nonce.
 func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSigningOptions) error {
 	if signing == nil {
 		return fmt.Errorf("signing options are required to unregister a storage node")
@@ -336,7 +338,7 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	if err != nil {
 		return fmt.Errorf("failed to marshal unregister storage node tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	if err := f.client.submitSigned(context.Background(), nodeDID, signing.Nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
 	}
 	return nil
