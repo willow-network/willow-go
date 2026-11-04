@@ -12,7 +12,14 @@ import (
 	"time"
 )
 
-// LightClient provides trustless verification of Willow chain state.
+// LightClient keeps a CometBFT header of the Willow chain that it trusts: one
+// pinned with InitializeWithTrustedHeader or ImportTrustedState, or the latest
+// header an endpoint reports (InitializeWithTrustOnFirstUse), and then each
+// later header SyncToLatest accepts through VerifyHeader.
+//
+// VerifyHeader doesn't verify the commit's signatures, so a header the light
+// client moves to is only as trustworthy as the endpoints that serve it, and
+// its app hash isn't verified against the validators.
 type LightClient struct {
 	config       Config
 	httpClient   *http.Client
@@ -68,9 +75,9 @@ func NewLightClient(config Config) (*LightClient, error) {
 }
 
 // InitializeWithTrustOnFirstUse initializes the light client by fetching and
-// trusting the latest block from validators. Every subsequent header is
-// verified against that initial trusted state. Pin a known-good checkpoint
-// header in production deployments.
+// trusting the latest block from validators. Every later header SyncToLatest
+// takes is checked by VerifyHeader against that initial trusted state. Pin a
+// known-good checkpoint header in production deployments.
 func (lc *LightClient) InitializeWithTrustOnFirstUse(ctx context.Context) error {
 	// Fetch the latest block from any responsive validator
 	var block *LightBlock
@@ -106,11 +113,15 @@ func (lc *LightClient) InitializeWithTrustOnFirstUse(ctx context.Context) error 
 	return nil
 }
 
-// GetVerifiedRootHash returns the verified root hash (app_hash) from the latest
-// trusted header — the cryptographically verified root hash proofs should be
-// verified against. If the light client is not initialized, it is initialized
-// via trust-on-first-use.
-func (lc *LightClient) GetVerifiedRootHash(ctx context.Context) (string, error) {
+// GetLatestAppHash returns the app_hash of the light client's latest header
+// (see GetLatestTrustedHeader). If the light client is not initialized, it is
+// initialized by trust on first use: the header is the one the first
+// responsive endpoint reports.
+//
+// The hash isn't verified against the validators' commit signatures (see
+// LightClient): it is as trustworthy as the header pinned, or the endpoints
+// the header came from.
+func (lc *LightClient) GetLatestAppHash(ctx context.Context) (string, error) {
 	lc.stateMu.RLock()
 	state := lc.trustedState
 	lc.stateMu.RUnlock()
@@ -130,6 +141,14 @@ func (lc *LightClient) GetVerifiedRootHash(ctx context.Context) (string, error) 
 	}
 
 	return state.Header.AppHash, nil
+}
+
+// GetVerifiedRootHash returns GetLatestAppHash.
+//
+// Deprecated: the hash isn't verified against the validators' commit
+// signatures; use GetLatestAppHash.
+func (lc *LightClient) GetVerifiedRootHash(ctx context.Context) (string, error) {
+	return lc.GetLatestAppHash(ctx)
 }
 
 // InitializeWithTrustedHeader initializes the light client with a trusted header.
@@ -215,7 +234,13 @@ func (lc *LightClient) SyncToLatest(ctx context.Context) error {
 	return fmt.Errorf("failed to sync from any validator: %v", lastErr)
 }
 
-// VerifyHeader verifies an untrusted header against the trusted state.
+// VerifyHeader checks an untrusted header against the trusted state: its chain
+// id, a height and time after the trusted header's, the trusting period, clock
+// drift, an adjacent header's validator-set hash, and that the validators its
+// commit lists as signing hold the trust threshold of voting power.
+//
+// It doesn't verify the commit's signatures: Verified in the result means
+// these checks passed, not that the validators signed the header.
 func (lc *LightClient) VerifyHeader(ctx context.Context, untrusted LightBlock) (*VerificationResult, error) {
 	lc.stateMu.RLock()
 	trusted := lc.trustedState

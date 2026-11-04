@@ -187,6 +187,8 @@ type TrustedState struct {
 
 // VerificationResult represents the result of header verification.
 type VerificationResult struct {
+	// Verified is true when the checks VerifyHeader runs passed; they don't
+	// include the commit's signatures.
 	Verified       bool   `json:"verified"`
 	Height         int64  `json:"height"`
 	AppHash        string `json:"app_hash"`

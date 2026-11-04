@@ -12,10 +12,11 @@ import (
 	"github.com/willow-network/willow-go/consensus"
 )
 
-// QuerySource tells the routing layer where to send a query.
+// QuerySource tells the routing layer where to send a query. Whichever
+// backend answers, the answer is returned unverified.
 //
-//   - QuerySourceValidator: consensus-verified chain-tip. Every row is
-//     Merkle-provable. Fails fast for VerifyOnly subgroves.
+//   - QuerySourceValidator: the API, which serves the chain-tip state. Fails
+//     fast for VerifyOnly subgroves.
 //   - QuerySourceIndexer: full history + analytics via an indexer.
 //   - QuerySourceAuto (default): indexer if one serves this subgrove, else
 //     validator. Sets Fallback=true when it falls back.

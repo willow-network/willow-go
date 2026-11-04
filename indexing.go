@@ -8,97 +8,90 @@ import (
 	"io"
 	"net/http"
 	"strings"
-
-	"github.com/willow-network/willow-go/grovedb"
 )
 
 // IndexingOperations provides methods for blockchain indexing and GraphQL queries.
+//
+// No GraphQL or SQL answer is verified: the SDK can't bind an indexer's or
+// the API's answer to the chain's state (it verifies no CometBFT header, and
+// no proof ties the answer's rows to a root), so every query method returns
+// the answer as it comes.
 type IndexingOperations struct {
 	client *Client
 }
 
-// Query executes a GraphQL query against a subgrove.
-// When an indexer URL is configured, the query is routed there.
+// Query returns an unsupported-operation error and sends nothing.
+//
+// Verifying a GraphQL answer takes a proof that binds the returned data to a
+// state root, and that root checked against a CometBFT header verified by the
+// validators' commit signatures. The answer's proof doesn't bind its data, and
+// this SDK verifies no header (see the lightclient package), so it doesn't
+// present a GraphQL answer as verified. QueryUnverified sends the query and
+// returns its answer unverified.
 func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
-	// Enable proof by default if light client is available
-	if i.client.HasLightClient() {
-		req.IncludeProof = BoolPtr(true)
+	return nil, NewUnsupportedError("Indexing.Query: this SDK can't verify a GraphQL answer against the chain; QueryUnverified sends the query and returns its answer unverified")
+}
+
+// QueryUnverified sends a GraphQL query asking for no proof (include_proof
+// false) and returns the answer as it comes, unverified. With an indexer URL
+// set (WithIndexerURL) the query goes to that indexer; otherwise to the API,
+// signed by the client's identity when one is set. req isn't changed.
+func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
+	if req == nil {
+		return nil, NewValidationError("QueryUnverified: no GraphQL request")
+	}
+	sent := *req
+	sent.IncludeProof = BoolPtr(false)
+	path := fmt.Sprintf("/graphql/%s", subgroveID)
+	var response GraphQLResponse
+	if i.client.indexerURL == nil {
+		// The API answers GraphQL with the GraphQL response itself, not the
+		// success/data envelope.
+		if err := i.client.post(ctx, path, &sent, &response); err != nil {
+			return nil, err
+		}
+		return &response, nil
 	}
 
-	baseURL := i.client.IndexerBaseURL()
-	url := fmt.Sprintf("%s/graphql/%s", baseURL, subgroveID)
-
-	body, err := json.Marshal(req)
+	body, err := json.Marshal(&sent)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal GraphQL request: %w", err)
+		return nil, NewSerializationError("failed to marshal GraphQL request", err)
 	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, i.client.IndexerBaseURL()+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if i.client.indexerURL == nil {
-		// Sent to the API, so it carries the identity's read rights.
-		if err := i.client.signAPIRequest(httpReq, body); err != nil {
-			return nil, err
-		}
-	}
-
 	resp, err := i.client.httpClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("GraphQL query request failed: %w", err)
 	}
 	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
-
-	var response GraphQLResponse
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
-
-	// Verify proof if available
-	if i.client.HasLightClient() && len(response.Proof) > 0 {
-		if err := i.verifyProof(ctx, response.Proof); err != nil {
-			return nil, NewProofError(fmt.Sprintf("proof verification failed: %v", err))
-		}
-	}
-
 	return &response, nil
 }
 
-// QueryUnverified executes a GraphQL query without proof verification (faster).
-// The API answers GraphQL with the GraphQL response itself, not the
-// success/data envelope.
-func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
-	req.IncludeProof = BoolPtr(false)
-
-	path := fmt.Sprintf("/graphql/%s", subgroveID)
-	var response GraphQLResponse
-	err := i.client.post(ctx, path, req, &response)
-	if err != nil {
-		return nil, err
-	}
-
-	return &response, nil
-}
-
-// Execute is a convenience method for executing GraphQL queries.
+// Execute sends a GraphQL query with its variables, unverified: it is
+// QueryUnverified with a request built from them.
 func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query string, variables map[string]interface{}) (*GraphQLResponse, error) {
-	return i.Query(ctx, subgroveID, &GraphQLRequest{
+	return i.QueryUnverified(ctx, subgroveID, &GraphQLRequest{
 		Query:     query,
 		Variables: variables,
 	})
 }
 
-// GraphQLQueryWithSource executes a GraphQL query with explicit source selection.
+// GraphQLQueryWithSource executes a GraphQL query with explicit source
+// selection, sending req as it is built, and returns the answer (and any
+// proof it carries) unverified.
 //
-// Callers declare the trust model via QuerySource:
-//   - QuerySourceValidator: consensus-verified chain-tip. Returns a
-//     *ValidatorHasNoDataError for VerifyOnly subgroves.
+// Callers choose the backend via QuerySource:
+//   - QuerySourceValidator: the API, which serves the chain-tip state.
+//     Returns a *ValidatorHasNoDataError for VerifyOnly subgroves.
 //   - QuerySourceIndexer: historical/analytics via an indexer. Returns a
 //     *NoIndexersReachableError if none are reachable.
 //   - QuerySourceAuto (default): indexer if one serves this subgrove, else
@@ -119,7 +112,8 @@ func (i *IndexingOperations) GraphQLQueryWithSource(
 	)
 }
 
-// SqlQueryWithSource executes a SQL query with explicit source selection.
+// SqlQueryWithSource executes a SQL query with explicit source selection and
+// returns the answer (and any proof it carries) unverified.
 //
 // See GraphQLQueryWithSource for source semantics.
 func (i *IndexingOperations) SqlQueryWithSource(
@@ -300,7 +294,8 @@ func unwrapResponse[T any](raw []byte) (T, error) {
 	return zero, fmt.Errorf("failed to decode response")
 }
 
-// SqlQuery executes a SQL query against a subgrove.
+// SqlQuery executes a SQL query against a subgrove and returns the answer
+// (and, with includeProof, its proof) unverified.
 // When an indexer URL is configured, the query is routed there.
 func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
 	req := SqlRequest{
@@ -345,7 +340,8 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 	return &result, nil
 }
 
-// ExecuteWithResult executes a query and unmarshals the result into the provided type.
+// ExecuteWithResult sends a query unverified (see Execute) and unmarshals its
+// data into result.
 func (i *IndexingOperations) ExecuteWithResult(ctx context.Context, subgroveID, query string, variables map[string]interface{}, result interface{}) error {
 	response, err := i.Execute(ctx, subgroveID, query, variables)
 	if err != nil {
@@ -410,32 +406,6 @@ func (i *IndexingOperations) GetIndexerStatus(ctx context.Context, indexerID, su
 	return nil, NewUnsupportedError("GetIndexerStatus: the API serves no per-subgrove indexer status route; GetIndexer reads an indexer, with the subgroves it serves and its status")
 }
 
-func (i *IndexingOperations) verifyProof(ctx context.Context, proof []byte) error {
-	if !i.client.HasLightClient() {
-		return ErrLightClientNotInitialized
-	}
-
-	// Get the trusted root hash from the light client
-	trustedHeader, err := i.client.lightClient.GetLatestTrustedHeader()
-	if err != nil {
-		return NewLightClientError("failed to get trusted header", err)
-	}
-
-	// Verify the GroveDB proof
-	result, err := grovedb.VerifyProof(proof)
-	if err != nil {
-		return NewProofError(fmt.Sprintf("failed to verify proof: %v", err))
-	}
-
-	// Compare root hashes
-	if !strings.EqualFold(result.RootHash, trustedHeader.AppHash) {
-		return NewProofError(fmt.Sprintf("root hash mismatch: expected %s, got %s",
-			trustedHeader.AppHash, result.RootHash))
-	}
-
-	return nil
-}
-
 // GraphQLQueryBuilder provides a fluent interface for building GraphQL queries.
 type GraphQLQueryBuilder struct {
 	req *GraphQLRequest
@@ -471,7 +441,9 @@ func (b *GraphQLQueryBuilder) OperationName(name string) *GraphQLQueryBuilder {
 	return b
 }
 
-// IncludeProof enables proof inclusion.
+// IncludeProof asks for a proof. QueryUnverified asks for none whatever the
+// request says; GraphQLQueryWithSource sends the request as built and returns
+// any proof unverified.
 func (b *GraphQLQueryBuilder) IncludeProof() *GraphQLQueryBuilder {
 	b.req.IncludeProof = BoolPtr(true)
 	return b

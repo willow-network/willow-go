@@ -17,8 +17,8 @@ import (
 // SubscribeSource tells the SDK which backend to open the subscription
 // WebSocket against.
 //
-//   - SubscribeSourceValidator (default): {apiURL}/graphql/ws,
-//     consensus-verified chain-tip events (BlockFinalized).
+//   - SubscribeSourceValidator (default): {apiURL}/graphql/ws, the API's
+//     chain-tip events (BlockFinalized), delivered unverified.
 //   - SubscribeSourceIndexer: selected via discovery (or the explicit
 //     indexerURL override), for `VerifyOnly` subgroves or caller-driven
 //     indexer-side tails.

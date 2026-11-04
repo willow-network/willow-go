@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/willow-network/willow-go/lightclient"
 )
 
 // envelopeAPI is a mocked API answering each "METHOD path" with its body, as
@@ -298,16 +300,108 @@ func TestQueryBodyIsWhatTheAPIApplies(t *testing.T) {
 	}
 }
 
-// Data.Query and Data.VerifyProof don't present data as verified, since the
-// SDK can't verify a proof against the chain: they return an unsupported
-// error, and Query sends nothing.
+// Data.Query, Data.VerifyProof, Indexing.Query, and
+// Data.QueryHistoricalVerified don't present data as verified, since the SDK
+// can't verify an answer against the chain: they return an unsupported error
+// and send nothing, with a light client set too, and leave the request as it
+// was.
 func TestQueryAndVerifyProofAreUnsupported(t *testing.T) {
 	client := envelopeAPI(t, map[string]string{}) // any request fails the test
+	lc, err := lightclient.NewLightClient(lightclient.Config{ChainID: "c", ValidatorEndpoints: []string{"http://127.0.0.1:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.lightClient = lc
 	ctx := context.Background()
 	if got, err := client.Data.Query(ctx, "sg", NewQueryBuilder().Equals("a", 1).Build()); !IsUnsupported(err) || got != nil {
 		t.Errorf("Data.Query = %+v, %v; want an unsupported error", got, err)
 	}
 	if err := client.Data.VerifyProof(ctx, &DataProof{Proof: []byte{1}, Height: 9}); !IsUnsupported(err) {
 		t.Errorf("Data.VerifyProof = %v; want an unsupported error", err)
+	}
+	req := NewGraphQLQuery("{ a }").Build()
+	if got, err := client.Indexing.Query(ctx, "sg", req); !IsUnsupported(err) || got != nil || req.IncludeProof != nil {
+		t.Errorf("Indexing.Query = %+v, %v (include_proof %v); want an unsupported error", got, err, req.IncludeProof)
+	}
+	historical := &HistoricalQueryRequest{Key: []byte("k")}
+	if got, err := client.Data.QueryHistoricalVerified(ctx, "sg", "cp", historical); !IsUnsupported(err) || got != nil || historical.IncludeProof {
+		t.Errorf("QueryHistoricalVerified = %+v, %v (include_proof %v); want an unsupported error", got, err, historical.IncludeProof)
+	}
+	if _, err := client.Data.QueryHistoricalVerified(ctx, "sg", "cp", nil); !IsUnsupported(err) {
+		t.Errorf("QueryHistoricalVerified(nil) = %v; want an unsupported error", err)
+	}
+}
+
+// Indexing.QueryUnverified, Execute, and ExecuteWithResult send the query
+// asking for no proof, without changing the caller's request, to the API, or
+// to the indexer when one is set, and return its answer.
+func TestGraphQLQueriesAreSentUnverified(t *testing.T) {
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sent = append(sent, r.URL.Path+" "+string(body))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"a":1}}`))
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+	for _, indexer := range []bool{false, true} {
+		sent = nil
+		var opts []ClientOption
+		if indexer {
+			opts = append(opts, WithIndexerURL(srv.URL+"/indexer"))
+		}
+		client, err := NewClient(srv.URL, opts...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		client.SetIdentity(vectorIdentity(t, Ed25519))
+		req := NewGraphQLQuery("{ a }").IncludeProof().Build()
+		if got, err := client.Indexing.QueryUnverified(ctx, "sg", req); err != nil || string(got.Data) != `{"a":1}` {
+			t.Fatalf("QueryUnverified = %+v, %v", got, err)
+		}
+		if !*req.IncludeProof {
+			t.Error("QueryUnverified changed the caller's request")
+		}
+		if _, err := client.Indexing.Execute(ctx, "sg", "{ a }", nil); err != nil {
+			t.Fatal(err)
+		}
+		var result struct{ A int }
+		if err := client.Indexing.ExecuteWithResult(ctx, "sg", "{ a }", nil, &result); err != nil || result.A != 1 {
+			t.Fatalf("ExecuteWithResult = %+v, %v", result, err)
+		}
+		prefix := ""
+		if indexer {
+			prefix = "/indexer"
+		}
+		if len(sent) != 3 {
+			t.Fatalf("sent %q", sent)
+		}
+		for _, s := range sent {
+			if !strings.HasPrefix(s, prefix+"/graphql/sg ") || !strings.Contains(s, `"include_proof":false`) {
+				t.Errorf("indexer %v: sent %s", indexer, s)
+			}
+		}
+		if _, err := client.Indexing.QueryUnverified(ctx, "sg", nil); !IsValidationError(err) {
+			t.Errorf("QueryUnverified(nil) = %v", err)
+		}
+	}
+}
+
+// The light client's app hash is labeled as what it is, not as verified; the
+// deprecated name returns the same value.
+func TestLightClientAppHashIsNotLabeledVerified(t *testing.T) {
+	lc, err := lightclient.NewLightClient(lightclient.Config{ChainID: "c", ValidatorEndpoints: []string{"http://127.0.0.1:1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.InitializeWithTrustedHeader(lightclient.LightBlock{Header: lightclient.Header{ChainID: "c", Height: 5, AppHash: "AB"}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	latest, err1 := lc.GetLatestAppHash(ctx)
+	deprecated, err2 := lc.GetVerifiedRootHash(ctx)
+	if err1 != nil || err2 != nil || latest != "AB" || deprecated != latest {
+		t.Fatalf("GetLatestAppHash = %q, %v; GetVerifiedRootHash = %q, %v", latest, err1, deprecated, err2)
 	}
 }

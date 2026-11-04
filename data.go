@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/willow-network/willow-go/consensus"
-	"github.com/willow-network/willow-go/grovedb"
 )
 
 // DataOperations provides methods for data storage and retrieval.
@@ -143,18 +142,19 @@ func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *Qu
 }
 
 // QueryUnverified queries data without a proof (include_proof false) and
-// returns the API's documents as they are.
+// returns the API's documents as they are. query isn't changed.
 func (d *DataOperations) QueryUnverified(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
-	if query == nil {
-		query = &QueryRequest{}
+	var sent QueryRequest
+	if query != nil {
+		sent = *query
 	}
-	query.IncludeProof = BoolPtr(false)
+	sent.IncludeProof = BoolPtr(false)
 
-	response, err := d.query(ctx, subgroveID, query)
+	response, err := d.query(ctx, subgroveID, &sent)
 	if err != nil {
 		return nil, err
 	}
@@ -429,8 +429,9 @@ func (d *DataOperations) GetCheckpointStateRoot(ctx context.Context, subgroveID,
 	return &response, nil
 }
 
-// QueryHistorical queries historical indexed data from a checkpoint.
-// Routes through consensus to available indexer nodes that serve historical data.
+// QueryHistorical queries historical indexed data from a checkpoint and
+// returns the answer unverified: its StateRoot, Data, and Proof are what the
+// API relays from an indexer, and the SDK checks none of them.
 // The API answers this route with the HistoricalQueryResponse itself, not the
 // success/data envelope.
 func (d *DataOperations) QueryHistorical(ctx context.Context, subgroveID, checkpointID string, req *HistoricalQueryRequest) (*HistoricalQueryResponse, error) {
@@ -442,43 +443,18 @@ func (d *DataOperations) QueryHistorical(ctx context.Context, subgroveID, checkp
 	return &response, nil
 }
 
-// QueryHistoricalVerified queries historical data with automatic proof verification.
-// Forces proof inclusion and verifies the proof against the checkpoint's state root.
+// QueryHistoricalVerified returns an unsupported-operation error and sends
+// nothing.
+//
+// Verifying a historical answer takes the checkpoint's state root read from
+// the chain against a CometBFT header verified by the validators' commit
+// signatures, and a proof that binds the answer's data at the asked path and
+// key to that root. The answer carries its own state root, and this SDK
+// verifies no header and has no GroveDB verifier that binds the data, so it
+// doesn't present a historical answer as verified.
+//
+// Deprecated: the SDK can't verify a historical answer; QueryHistorical
+// returns it unverified.
 func (d *DataOperations) QueryHistoricalVerified(ctx context.Context, subgroveID, checkpointID string, req *HistoricalQueryRequest) (*HistoricalQueryResponse, error) {
-	// Force proof inclusion
-	req.IncludeProof = true
-
-	response, err := d.QueryHistorical(ctx, subgroveID, checkpointID, req)
-	if err != nil {
-		return nil, err
-	}
-
-	// Verify the proof against checkpoint state root
-	if response.Proof == "" {
-		return nil, NewProofError("historical query did not return proof data despite include_proof=true")
-	}
-
-	// Decode hex proof
-	proofBytes, err := hex.DecodeString(strings.TrimPrefix(response.Proof, "0x"))
-	if err != nil {
-		return nil, NewProofError(fmt.Sprintf("failed to decode historical proof hex: %v", err))
-	}
-
-	// Verify proof and compare with state root
-	result, err := grovedb.VerifyProof(proofBytes)
-	if err != nil {
-		return nil, NewProofError(fmt.Sprintf("failed to verify historical proof: %v", err))
-	}
-
-	// Normalize and compare root hashes
-	computedRoot := strings.ToLower(strings.TrimPrefix(result.RootHash, "0x"))
-	expectedRoot := strings.ToLower(strings.TrimPrefix(response.StateRoot, "0x"))
-
-	if computedRoot != expectedRoot {
-		return nil, NewProofError(fmt.Sprintf(
-			"historical proof verification failed: computed root %s does not match checkpoint state root %s",
-			result.RootHash, response.StateRoot))
-	}
-
-	return response, nil
+	return nil, NewUnsupportedError("QueryHistoricalVerified: this SDK can't verify a historical answer against the chain; QueryHistorical returns it unverified")
 }

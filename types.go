@@ -306,10 +306,10 @@ type HistoricalQueryResponse struct {
 	Success          bool        `json:"success"`
 	ProviderDID      string      `json:"provider_did,omitempty"`
 	ProviderEndpoint string      `json:"provider_endpoint,omitempty"`
-	StateRoot        string      `json:"state_root"`      // Checkpoint state root for proof verification
+	StateRoot        string      `json:"state_root"`      // Checkpoint state root, as the answer reports it (unverified)
 	BlockRange       [2]uint64   `json:"block_range"`     // Block range covered by the checkpoint
 	Data             interface{} `json:"data"`            // Query results from the indexer
-	Proof            string      `json:"proof,omitempty"` // Merkle proof (hex-encoded)
+	Proof            string      `json:"proof,omitempty"` // Merkle proof (hex-encoded), unverified
 	CanReindex       bool        `json:"can_reindex"`     // Whether data can be re-indexed
 	Error            string      `json:"error,omitempty"` // Error message if any
 }
