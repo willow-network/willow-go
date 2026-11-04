@@ -2,6 +2,7 @@
 package willow
 
 import (
+	"bytes"
 	"encoding/json"
 	"time"
 
@@ -348,10 +349,28 @@ type GraphQLLocation struct {
 }
 
 // GraphQLResponse represents a GraphQL query response.
+//
+// Proof is the proof object the answer carries, as JSON, unverified (the SDK
+// can't verify it; see IndexingOperations), or nil when it carries none.
 type GraphQLResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 	Errors []GraphQLError  `json:"errors,omitempty"`
-	Proof  []byte          `json:"proof,omitempty"`
+	Proof  json.RawMessage `json:"proof,omitempty"`
+}
+
+// UnmarshalJSON reads a GraphQL answer, leaving Proof nil when the answer's
+// proof is null or absent.
+func (r *GraphQLResponse) UnmarshalJSON(b []byte) error {
+	type plain GraphQLResponse
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	if string(bytes.TrimSpace(p.Proof)) == "null" {
+		p.Proof = nil
+	}
+	*r = GraphQLResponse(p)
+	return nil
 }
 
 // SqlRequest represents a SQL query request
@@ -369,7 +388,8 @@ type SqlResponse struct {
 	Proof    *QueryProof     `json:"proof,omitempty"`
 }
 
-// QueryProof contains Merkle proof data for query verification
+// QueryProof is the Merkle proof data a SQL answer carries, returned
+// unverified (see IndexingOperations).
 type QueryProof struct {
 	MerkleProofs   []MerkleProofData `json:"merkle_proofs"`
 	StateRoot      []byte            `json:"state_root"`

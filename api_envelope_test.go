@@ -388,6 +388,69 @@ func TestGraphQLQueriesAreSentUnverified(t *testing.T) {
 	}
 }
 
+// GraphQLQueryWithSource asks for no proof unless the request asks for one,
+// leaving the caller's request unchanged, and reads an answer carrying the
+// API's or an indexer's proof object, returning it as JSON. SqlQueryWithSource
+// reads a proof of the same shape.
+func TestQueriesWithSourceReadAnswersCarryingProofs(t *testing.T) {
+	// As the API and an indexer send it (an indexer adds ethereum_block and a
+	// proof's merkle_proof bytes).
+	const proof = `{"merkle_proofs":[{"key":"k","value_hash":[1,2],"merkle_proof":[7],"siblings":[],"path":"p"}],` +
+		`"state_root":[1,2,3],"block_height":3,"ethereum_block":12,"ethereum_anchor":null}`
+	var sent []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		sent = append(sent, r.URL.Path+" "+string(body))
+		w.Header().Set("Content-Type", "application/json")
+		withProof := strings.Contains(string(body), `"include_proof":true`)
+		switch {
+		case strings.Contains(r.URL.Path, "/sql/"):
+			_, _ = w.Write([]byte(`{"columns":["a"],"rows":[[1]],"proof":` + proof + `}`))
+		case withProof:
+			_, _ = w.Write([]byte(`{"data":{"a":1},"errors":null,"proof":` + proof + `}`))
+		case strings.HasPrefix(r.URL.Path, "/indexer/"):
+			_, _ = w.Write([]byte(`{"data":{"a":1},"errors":null}`))
+		default:
+			_, _ = w.Write([]byte(`{"data":{"a":1},"errors":null,"proof":null}`))
+		}
+	}))
+	defer srv.Close()
+	ctx := context.Background()
+
+	for _, source := range []QuerySource{QuerySourceValidator, QuerySourceIndexer} {
+		sent = nil
+		client, err := NewClient(srv.URL, WithIndexerURL(srv.URL+"/indexer"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		plain := NewGraphQLQuery("{ a }").Build()
+		got, err := client.Indexing.GraphQLQueryWithSource(ctx, "sg", plain, source)
+		if err != nil || string(got.Result.Data) != `{"a":1}` || got.Result.Proof != nil {
+			t.Fatalf("source %v, no proof asked: %+v, %v", source, got, err)
+		}
+		if plain.IncludeProof != nil {
+			t.Errorf("source %v: the caller's request was changed", source)
+		}
+		asked := NewGraphQLQuery("{ a }").IncludeProof().Build()
+		got, err = client.Indexing.GraphQLQueryWithSource(ctx, "sg", asked, source)
+		if err != nil || string(got.Result.Data) != `{"a":1}` || !sameJSON(t, got.Result.Proof, []byte(proof)) {
+			t.Fatalf("source %v, a proof asked: %+v, %v", source, got, err)
+		}
+		if len(sent) != 2 || !strings.Contains(sent[0], `"include_proof":false`) || !strings.Contains(sent[1], `"include_proof":true`) {
+			t.Errorf("source %v: sent %q", source, sent)
+		}
+		if _, err := client.Indexing.GraphQLQueryWithSource(ctx, "sg", nil, source); !IsValidationError(err) {
+			t.Errorf("source %v, a nil request: %v", source, err)
+		}
+
+		sql, err := client.Indexing.SqlQueryWithSource(ctx, "sg", "SELECT a", true, source)
+		if err != nil || sql.Result.Proof == nil || string(sql.Result.Proof.StateRoot) != "\x01\x02\x03" ||
+			sql.Result.Proof.BlockHeight != 3 || string(sql.Result.Proof.MerkleProofs[0].ValueHash) != "\x01\x02" {
+			t.Fatalf("source %v, SQL with a proof: %+v, %v", source, sql, err)
+		}
+	}
+}
+
 // The light client's app hash is labeled as what it is, not as verified; the
 // deprecated name returns the same value.
 func TestLightClientAppHashIsNotLabeledVerified(t *testing.T) {

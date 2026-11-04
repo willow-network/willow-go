@@ -86,8 +86,10 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 }
 
 // GraphQLQueryWithSource executes a GraphQL query with explicit source
-// selection, sending req as it is built, and returns the answer (and any
-// proof it carries) unverified.
+// selection and returns the answer unverified. It asks for no proof
+// (include_proof false) unless req sets IncludeProof; a proof asked for is
+// returned, unverified, as the answer's JSON in GraphQLResponse.Proof. req
+// isn't changed.
 //
 // Callers choose the backend via QuerySource:
 //   - QuerySourceValidator: the API, which serves the chain-tip state.
@@ -103,7 +105,15 @@ func (i *IndexingOperations) GraphQLQueryWithSource(
 	req *GraphQLRequest,
 	source QuerySource,
 ) (*RoutedQueryResult[*GraphQLResponse], error) {
-	bodyBytes, err := json.Marshal(req)
+	if req == nil {
+		return nil, NewValidationError("GraphQLQueryWithSource: no GraphQL request")
+	}
+	sent := *req
+	if sent.IncludeProof == nil {
+		// The API and indexers attach a proof unless asked not to.
+		sent.IncludeProof = BoolPtr(false)
+	}
+	bodyBytes, err := json.Marshal(&sent)
 	if err != nil {
 		return nil, fmt.Errorf("marshal GraphQL request: %w", err)
 	}
@@ -442,8 +452,8 @@ func (b *GraphQLQueryBuilder) OperationName(name string) *GraphQLQueryBuilder {
 }
 
 // IncludeProof asks for a proof. QueryUnverified asks for none whatever the
-// request says; GraphQLQueryWithSource sends the request as built and returns
-// any proof unverified.
+// request says; GraphQLQueryWithSource asks for one only when it is set, and
+// returns it unverified.
 func (b *GraphQLQueryBuilder) IncludeProof() *GraphQLQueryBuilder {
 	b.req.IncludeProof = BoolPtr(true)
 	return b

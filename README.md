@@ -453,8 +453,11 @@ err := client.Indexing.ExecuteWithResult(ctx, "uniswap-v3", query, vars, &result
 
 `Execute`, `ExecuteWithResult`, and `QueryUnverified` ask for no proof and
 return the answer as the API (or, with `WithIndexerURL`, the indexer) sends
-it. `Indexing.Query` returns an unsupported error and sends nothing, because
-the SDK can't verify a GraphQL answer (see What the SDK verifies).
+it. `GraphQLQueryWithSource` asks for a proof only when the request sets
+`IncludeProof`, and returns it unverified, as the answer's JSON, in
+`GraphQLResponse.Proof`. `Indexing.Query` returns an unsupported error and
+sends nothing, because the SDK can't verify a GraphQL answer (see What the
+SDK verifies).
 
 ### Proofs and the light client
 
