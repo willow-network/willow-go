@@ -474,8 +474,3 @@ func FormatTransferMessage(req *TransferRequest, nonce uint64) string {
 	return fmt.Sprintf("Transfer\nFrom: %s\nTo: %s\nAmount: %d\nMemo: %s\nNonce: %d",
 		req.FromDid, req.ToDid, req.Amount, req.Memo, nonce)
 }
-
-// FormatDataStoreMessage formats the message to sign for data storage.
-func FormatDataStoreMessage(subgroveID, key string, data []byte) string {
-	return fmt.Sprintf("%s:%s:%s", subgroveID, key, string(data))
-}

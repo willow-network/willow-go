@@ -25,7 +25,10 @@ type FileSigningOptions struct {
 	OwnerDID    string
 	PublicKeyID string
 	SignFunc    func(message []byte) (string, error) // returns hex-encoded signature
-	Nonce       uint64
+	// Nonce is the transaction's nonce, one past the owner's account nonce.
+	// The signed message binds it, so a retry under another nonce is signed
+	// anew.
+	Nonce uint64
 }
 
 // FileManifest represents file metadata stored on-chain.
@@ -71,18 +74,29 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	}
 	merkleRoot := computeMerkleRoot(chunkHashes)
 
-	ownerDID := ""
+	fields := FileManifestFields{
+		SubgroveID:      subgroveID,
+		FileKey:         fileKey,
+		Filename:        filename,
+		ContentType:     guessContentType(filename),
+		TotalSize:       uint64(len(data)),
+		ContentHash:     contentHash,
+		ChunkCount:      uint32(chunkCount),
+		ChunkSize:       uint32(chunkSize),
+		ChunkMerkleRoot: merkleRoot,
+	}
 	var signatureBytes consensus.ByteArray
 	publicKeyID := ""
-	var nonce uint64
 
 	if signing != nil {
-		ownerDID = signing.OwnerDID
+		fields.OwnerDID = signing.OwnerDID
+		fields.Nonce = signing.Nonce
 		publicKeyID = signing.PublicKeyID
-		nonce = signing.Nonce
 
-		message := fmt.Sprintf("store_file:%s:%s:%s:%d",
-			subgroveID, fileKey, contentHashHex, len(data))
+		message, err := FormatStoreFileManifestMessage(fields)
+		if err != nil {
+			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
+		}
 		sig, err := signing.SignFunc([]byte(message))
 		if err != nil {
 			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
@@ -94,22 +108,23 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 		signatureBytes = decoded
 	}
 
-	// Submit StoreFileManifestTx to consensus
+	// Submit StoreFileManifestTx to consensus, carrying exactly the signed
+	// fields.
 	manifestTx := map[string]interface{}{
 		"StoreFileManifest": map[string]interface{}{
-			"subgrove_id":       subgroveID,
-			"file_key":          fileKey,
-			"filename":          filename,
-			"content_type":      guessContentType(filename),
-			"total_size":        len(data),
-			"content_hash":      consensus.ByteArray(contentHash[:]),
-			"chunk_count":       chunkCount,
-			"chunk_size":        chunkSize,
-			"chunk_merkle_root": consensus.ByteArray(merkleRoot[:]),
-			"owner_did":         ownerDID,
+			"subgrove_id":       fields.SubgroveID,
+			"file_key":          fields.FileKey,
+			"filename":          fields.Filename,
+			"content_type":      fields.ContentType,
+			"total_size":        fields.TotalSize,
+			"content_hash":      consensus.ByteArray(fields.ContentHash[:]),
+			"chunk_count":       fields.ChunkCount,
+			"chunk_size":        fields.ChunkSize,
+			"chunk_merkle_root": consensus.ByteArray(fields.ChunkMerkleRoot[:]),
+			"owner_did":         fields.OwnerDID,
 			"signature":         signatureBytes,
 			"public_key_id":     publicKeyID,
-			"nonce":             nonce,
+			"nonce":             fields.Nonce,
 		},
 	}
 	txBody, err := json.Marshal(manifestTx)
@@ -239,8 +254,10 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 		publicKeyID = signing.PublicKeyID
 		nonce = signing.Nonce
 
-		message := fmt.Sprintf("delete_file:%s:%s",
-			subgroveID, fileKey)
+		message, err := FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID, nonce)
+		if err != nil {
+			return fmt.Errorf("failed to sign delete file tx: %w", err)
+		}
 		sig, err := signing.SignFunc([]byte(message))
 		if err != nil {
 			return fmt.Errorf("failed to sign delete file tx: %w", err)
