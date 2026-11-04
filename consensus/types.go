@@ -189,8 +189,9 @@ type CheckpointVerificationConfig struct {
 
 // RegisterSubgroveTx represents a subgrove registration transaction, sent as
 // {"RegisterSubgrove": tx}. Every field is sent, so the chain decodes exactly
-// the values the signature covers: nil slices go as empty lists and nil
-// optional fields as null.
+// the values the signature covers: nil slices go as empty lists, a nil Mode as
+// the chain's default (DataStorage with an empty name and lists, no read
+// pricing), and other nil optional fields as null.
 //
 // It is signed over FormatRegisterSubgroveMessage (in the willow package),
 // whose Config line is the SHA-256 of RegisterSubgroveUnsignedBincode of the
@@ -222,11 +223,15 @@ type RegisterSubgroveTx struct {
 	CryptographicCompleteness bool      `json:"cryptographic_completeness"`
 }
 
-// MarshalJSON sends every field, nil slices as empty lists.
+// MarshalJSON sends every field, nil slices as empty lists and a nil Mode as
+// the chain's default DataStorage (the chain refuses a null mode).
 func (tx RegisterSubgroveTx) MarshalJSON() ([]byte, error) {
 	type plain RegisterSubgroveTx
 	p := plain(tx)
 	p.Admins = orEmpty(p.Admins)
+	if p.Mode == nil {
+		p.Mode = &SubgroveMode{DataStorage: &SubgroveDataStorage{}}
+	}
 	return json.Marshal(p)
 }
 

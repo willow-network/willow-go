@@ -114,7 +114,8 @@ func TestEveryEnvelopeRouteYieldsItsData(t *testing.T) {
 		!query.HasMore || string(query.Proof) != "\x0a\x0b" || query.Height != 9 {
 		t.Errorf("Data.QueryUnverified = %+v, %v", query, err)
 	}
-	if proof, err := client.Data.GetProof(ctx, "sg", "k"); err != nil || string(proof.Proof) != "\xc0\xff\xee" || proof.Height != 12 {
+	if proof, err := client.Data.GetProof(ctx, "sg", "k"); err != nil || string(proof.Proof) != "\xc0\xff\xee" || proof.Height != 12 ||
+		len(proof.Path) != 1 || string(proof.Path[0]) != "subgr" || string(proof.Key) != "k" {
 		t.Errorf("Data.GetProof = %+v, %v", proof, err)
 	}
 	if cp, err := client.Data.GetCheckpointStateRoot(ctx, "sg", strings.Repeat("ab", 32)); err != nil || cp.StateRoot != "cd" || cp.BlockRange != [2]uint64{1, 9} || !cp.IsTrusted {
@@ -287,5 +288,19 @@ func TestQueryBodyIsWhatTheAPIApplies(t *testing.T) {
 	}
 	if len(bodies) != 1 {
 		t.Fatalf("sent %d queries, want 1", len(bodies))
+	}
+}
+
+// Data.Query and Data.VerifyProof don't present data as verified, since the
+// SDK can't verify a proof against the chain: they return an unsupported
+// error, and Query sends nothing.
+func TestQueryAndVerifyProofAreUnsupported(t *testing.T) {
+	client := envelopeAPI(t, map[string]string{}) // any request fails the test
+	ctx := context.Background()
+	if got, err := client.Data.Query(ctx, "sg", NewQueryBuilder().Equals("a", 1).Build()); !IsUnsupported(err) || got != nil {
+		t.Errorf("Data.Query = %+v, %v; want an unsupported error", got, err)
+	}
+	if err := client.Data.VerifyProof(ctx, &DataProof{Proof: []byte{1}, Height: 9}); !IsUnsupported(err) {
+		t.Errorf("Data.VerifyProof = %v; want an unsupported error", err)
 	}
 }

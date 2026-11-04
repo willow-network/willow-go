@@ -74,8 +74,7 @@ func (d *DataOperations) StoreItem(ctx context.Context, subgroveID, key string, 
 // Get retrieves the value stored under key.
 //
 // The API's data route answers with the value alone, without a proof, so Get
-// has nothing to verify; GetProof fetches the key's GroveDB proof and
-// VerifyProof checks one against the light client.
+// has nothing to verify. GetProof fetches the key's GroveDB proof.
 func (d *DataOperations) Get(ctx context.Context, subgroveID, key string) (*DataResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
@@ -126,46 +125,29 @@ func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, item
 	return NewUnsupportedError("BatchStore: the API serves no batch write route; store each item with StoreItem, one StoreData transaction per item")
 }
 
-// Query queries data with filters and automatic proof verification.
+// Query returns an unsupported-operation error and sends nothing.
 //
-// Proofs are always verified through the light client. If no light client has
-// been configured, one is auto-initialized via trust-on-first-use; pin a
-// known-good checkpoint header in production deployments.
+// A query's proof is of the state after block Height, so its root is the
+// app_hash of the CometBFT header at Height+1. Verifying a query takes that
+// header verified against the validators' commit signatures, the proof's
+// root reproduced, and the returned documents matched to the values the proof
+// proves. This SDK does none of these (see VerifyProof), so it doesn't present
+// a query as verified. QueryUnverified sends the query and returns its
+// documents unverified.
 func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
-	if err := d.client.RequireAuth(); err != nil {
-		return nil, err
-	}
-
-	// Always enable proof for trustless verification
-	query.IncludeProof = BoolPtr(true)
-
-	response, err := d.query(ctx, subgroveID, query)
-	if err != nil {
-		return nil, err
-	}
-
-	// Always verify proof using light client (auto-initializes if needed)
-	if len(response.Proof) > 0 {
-		proof := &DataProof{Proof: response.Proof, Height: int64(response.Height)}
-		if err := d.verifyProof(ctx, proof); err != nil {
-			return nil, NewProofError(fmt.Sprintf("proof verification failed: %v", err))
-		}
-	}
-
-	// Apply computed fields if registered for this dataset
-	if fields, ok := d.client.computedFields.Get(subgroveID); ok {
-		return ApplyComputedFieldsToResponse(response, fields), nil
-	}
-
-	return response, nil
+	return nil, NewUnsupportedError("Query: this SDK can't verify a query's proof against the chain (see VerifyProof); QueryUnverified sends the query and returns its documents unverified")
 }
 
-// QueryUnverified queries data without proof verification (faster).
+// QueryUnverified queries data without a proof (include_proof false) and
+// returns the API's documents as they are.
 func (d *DataOperations) QueryUnverified(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
 	}
 
+	if query == nil {
+		query = &QueryRequest{}
+	}
 	query.IncludeProof = BoolPtr(false)
 
 	response, err := d.query(ctx, subgroveID, query)
@@ -266,7 +248,14 @@ func queryBody(q *QueryRequest) (map[string]interface{}, error) {
 	return body, nil
 }
 
-// GetProof retrieves the proof for a specific key.
+// GetProof retrieves the GroveDB proof of a key, with the GroveDB path and
+// key it proves and the height of the block whose state it is of.
+//
+// The proof is of the state after block Height, so its root is the app_hash
+// of the CometBFT header at Height+1. Checking it takes that header verified
+// against the validators' commit signatures and a GroveDB verifier that
+// reproduces the chain's proofs, run at Path; this SDK has neither (see
+// VerifyProof), so GetProof returns the proof unverified.
 func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (*DataProof, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
@@ -275,8 +264,10 @@ func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (
 	path := fmt.Sprintf("/proof/%s/%s", subgroveID, key)
 	// The API answers {proof: hex, path: [hex], key: hex, height}.
 	var answer struct {
-		Proof  string `json:"proof"`
-		Height int64  `json:"height"`
+		Proof  string   `json:"proof"`
+		Path   []string `json:"path"`
+		Key    string   `json:"key"`
+		Height int64    `json:"height"`
 	}
 	if err := d.client.getData(ctx, path, &answer); err != nil {
 		return nil, err
@@ -285,42 +276,31 @@ func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (
 	if err != nil {
 		return nil, NewSerializationError("proof is not hex", err)
 	}
-
-	return &DataProof{Proof: proof, Height: answer.Height}, nil
+	result := &DataProof{Proof: proof, Height: answer.Height}
+	for _, segment := range answer.Path {
+		b, err := hex.DecodeString(segment)
+		if err != nil {
+			return nil, NewSerializationError("proof path segment is not hex", err)
+		}
+		result.Path = append(result.Path, b)
+	}
+	if answer.Key != "" {
+		if result.Key, err = hex.DecodeString(answer.Key); err != nil {
+			return nil, NewSerializationError("proof key is not hex", err)
+		}
+	}
+	return result, nil
 }
 
-// VerifyProof verifies a proof against the light client.
+// VerifyProof returns an unsupported-operation error.
+//
+// A proof's root must equal the app_hash of the CometBFT header at
+// proof.Height+1, verified against the validators' commit signatures. This
+// SDK doesn't verify CometBFT headers, and its GroveDB verifier doesn't
+// reproduce the chain's root for every proof, so it doesn't present a proof
+// as verified.
 func (d *DataOperations) VerifyProof(ctx context.Context, proof *DataProof) error {
-	return d.verifyProof(ctx, proof)
-}
-
-func (d *DataOperations) verifyProof(ctx context.Context, proof *DataProof) error {
-	// Get or create light client for trustless verification
-	// This auto-initializes with trust-on-first-use if not already configured.
-	lc, err := d.client.GetOrCreateLightClient(ctx)
-	if err != nil {
-		return NewLightClientError("failed to initialize light client", err)
-	}
-
-	// Get the trusted root hash from the light client
-	trustedRootHash, err := lc.GetVerifiedRootHash(ctx)
-	if err != nil {
-		return NewLightClientError("failed to get verified root hash", err)
-	}
-
-	// Verify the GroveDB proof
-	result, err := grovedb.VerifyProof(proof.Proof)
-	if err != nil {
-		return NewProofError(fmt.Sprintf("failed to verify proof: %v", err))
-	}
-
-	// Compare root hashes
-	if !strings.EqualFold(result.RootHash, trustedRootHash) {
-		return NewProofError(fmt.Sprintf("root hash mismatch: expected %s, got %s",
-			trustedRootHash, result.RootHash))
-	}
-
-	return nil
+	return NewUnsupportedError("VerifyProof: this SDK doesn't verify CometBFT headers, and its GroveDB verifier doesn't reproduce the chain's root for every proof, so it can't verify a proof against the chain")
 }
 
 // QueryBuilder provides a fluent interface for building queries.

@@ -26,14 +26,21 @@ type chainIndex struct {
 // ChainSchemaJSON returns the schema as the JSON text a RegisterSubgrove
 // transaction carries:
 //
-//	{"version":1,"fields":{"<name>":"<type>",...},"indexes":[{"name":...,"fields":[...],"unique":...}],"required_fields":[...]}
+//	{"version":1,"fields":{"<name>":"<type>",...},"indexes":[],"required_fields":[...]}
 //
 // Field types map to the chain's: string; int, integer, float, and number to
 // number; bool and boolean to boolean; array and array:<item> to array;
 // object; bytes. Another type is refused. Required fields go in
-// required_fields. The chain's schema has no name, description, per-field
-// indexed flag, or index type, so those are not sent.
+// required_fields.
+//
+// The chain refuses a DataStorage or FileStorage registration whose schema
+// declares indexes, so a schema with an index (Indexes, or a field marked
+// Indexed) is refused. The chain's schema has no name or description; those
+// label the schema in this SDK and are not sent.
 func (s SchemaDefinition) ChainSchemaJSON() (string, error) {
+	if len(s.Indexes) > 0 {
+		return "", NewValidationError("the chain doesn't support schema indexes; remove the schema's indexes")
+	}
 	out := chainSchema{
 		Version:        1,
 		Fields:         map[string]string{},
@@ -47,6 +54,9 @@ func (s SchemaDefinition) ChainSchemaJSON() (string, error) {
 		if _, dup := out.Fields[f.Name]; dup {
 			return "", NewValidationError(fmt.Sprintf("schema field %q appears twice", f.Name))
 		}
+		if f.Indexed {
+			return "", NewValidationError(fmt.Sprintf("schema field %q is marked indexed, and the chain doesn't support schema indexes", f.Name))
+		}
 		t, err := chainFieldType(f.Type)
 		if err != nil {
 			return "", err
@@ -55,13 +65,6 @@ func (s SchemaDefinition) ChainSchemaJSON() (string, error) {
 		if f.Required {
 			out.RequiredFields = append(out.RequiredFields, f.Name)
 		}
-	}
-	for _, idx := range s.Indexes {
-		fields := idx.Fields
-		if fields == nil {
-			fields = []string{}
-		}
-		out.Indexes = append(out.Indexes, chainIndex{Name: idx.Name, Fields: fields, Unique: idx.Unique})
 	}
 	body, err := json.Marshal(out)
 	if err != nil {

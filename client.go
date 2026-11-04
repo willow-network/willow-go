@@ -399,11 +399,10 @@ func (c *Client) HasLightClient() bool {
 	return c.lightClient != nil
 }
 
-// GetOrCreateLightClient returns the light client, creating one with trust-on-first-use if needed.
-//
-// Trust-on-first-use bootstrap: the first verified header is trusted, and
-// every subsequent header chains from it cryptographically. Pin a known-good
-// checkpoint header in production deployments.
+// GetOrCreateLightClient returns the light client, creating one with
+// trust-on-first-use if needed: it takes the RPC endpoint's latest header as
+// trusted. See the lightclient package for what its VerifyHeader checks; it
+// does not verify commit signatures.
 func (c *Client) GetOrCreateLightClient(ctx context.Context) (*lightclient.LightClient, error) {
 	if c.lightClient != nil {
 		return c.lightClient, nil

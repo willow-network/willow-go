@@ -27,8 +27,11 @@ type RegistrationOperations struct {
 // with consensus.Client.BroadcastTxSync.
 //
 // OwnerDid, when set, must be the identity's DID, and RewardRate must be 0: a
-// DataStorage registration has no reward rate. The registration returned is
-// req as sent; the subgrove exists once the transaction's block commits.
+// DataStorage registration has no reward rate. SubgroveID must be 1 to 64
+// ASCII letters, digits, '-', or '_', starting with a letter or digit, and the
+// schema must declare no indexes, as the chain requires. The registration
+// returned is req as sent; the subgrove exists once the transaction's block
+// commits.
 func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *RegisterSubgroveRequest) (*SubgroveRegistration, error) {
 	if err := r.client.RequireAuth(); err != nil {
 		return nil, err
@@ -42,6 +45,9 @@ func (r *RegistrationOperations) RegisterSubgrove(ctx context.Context, req *Regi
 	}
 	if req.RewardRate != 0 {
 		return nil, NewValidationError("RegisterSubgrove: a DataStorage registration has no reward rate")
+	}
+	if err := validateStorageSubgroveID(req.SubgroveID); err != nil {
+		return nil, err
 	}
 	schema, err := req.Schema.ChainSchemaJSON()
 	if err != nil {
@@ -262,7 +268,9 @@ func (b *SchemaBuilder) Description(desc string) *SchemaBuilder {
 	return b
 }
 
-// Field adds a field to the schema.
+// Field adds a field to the schema. The chain doesn't support schema
+// indexes, so ChainSchemaJSON (and RegisterSubgrove) refuse a field added
+// with indexed true.
 func (b *SchemaBuilder) Field(name, fieldType string, required, indexed bool) *SchemaBuilder {
 	b.schema.Fields = append(b.schema.Fields, SchemaField{
 		Name:     name,
@@ -303,7 +311,9 @@ func (b *SchemaBuilder) ObjectField(name string, required bool) *SchemaBuilder {
 	return b.Field(name, "object", required, false)
 }
 
-// Index adds an index to the schema.
+// Index adds an index to the schema. The chain doesn't support schema
+// indexes, so ChainSchemaJSON (and RegisterSubgrove) refuse a schema with one;
+// this and the other index methods describe a schema this SDK can't register.
 func (b *SchemaBuilder) Index(name string, fields []string, indexType IndexType, unique bool) *SchemaBuilder {
 	b.schema.Indexes = append(b.schema.Indexes, IndexDefinition{
 		Name:   name,

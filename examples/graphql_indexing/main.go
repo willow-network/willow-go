@@ -213,7 +213,6 @@ func main() {
 	fmt.Println("   + Trustless verification of indexed data")
 	fmt.Println("   + No fisherman disputes needed")
 	fmt.Println("   + Instant finality on results")
-	fmt.Println("   + Native proof verification in SDK")
 
 	fmt.Println("\nGraphQL indexing example complete!")
 }

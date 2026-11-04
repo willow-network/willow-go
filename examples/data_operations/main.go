@@ -143,14 +143,15 @@ func main() {
 		fmt.Println("   Updated product-1")
 	}
 
-	// 6. Query with a filter (the API's /query applies one equality filter)
-	fmt.Println("\n6. Query with a filter (verified)...")
+	// 6. Query with a filter (the API's /query applies one equality filter).
+	// The documents are the API's, unverified.
+	fmt.Println("\n6. Query with a filter...")
 	query := willow.NewQueryBuilder().
 		Equals("category", "electronics").
 		Limit(10).
 		Build()
 
-	queryResponse, err := client.Data.Query(ctx, subgroveID, query)
+	queryResponse, err := client.Data.QueryUnverified(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -161,15 +162,11 @@ func main() {
 		}
 	}
 
-	// 7. Query without verification (faster)
-	fmt.Println("\n7. Query without verification...")
-	query = willow.NewQueryBuilder().Limit(5).Build()
-
-	queryResponse, err = client.Data.QueryUnverified(ctx, subgroveID, query)
-	if err != nil {
+	// 7. Data.Query would verify the query's proof against the chain, which
+	// this SDK can't do, so it returns an unsupported error and sends nothing.
+	fmt.Println("\n7. Verified query...")
+	if _, err := client.Data.Query(ctx, subgroveID, query); willow.IsUnsupported(err) {
 		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Printf("   Found %d documents (unverified)\n", len(queryResponse.Results))
 	}
 
 	// 8. Delete data

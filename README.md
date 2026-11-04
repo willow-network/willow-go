@@ -11,14 +11,14 @@ go get github.com/willow-network/willow-go
 ## Features
 
 - **Identity Management**: DID generation and request signing
-- **Data Operations**: Store data as signed transactions, read it, and fetch and verify its proofs
+- **Data Operations**: Store data as signed transactions, read it, query it, and fetch its proofs
 - **Subgrove Management**: Register and deregister subgroves as signed transactions
 - **Token Operations**: Query balances and fee schedules
 - **GraphQL Indexing**: Query indexed blockchain data
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
-- **Light Client**: Trustless verification using CometBFT light client
-- **GroveDB Proofs**: Cryptographic proof verification for all queries
+- **Light Client**: Track a trusted CometBFT header (see Proofs and the light client)
+- **GroveDB Proofs**: Decode GroveDB proofs and check their envelope
 
 ## Transaction submission
 
@@ -90,10 +90,12 @@ A RegisterSubgrove's `Config` is the hex SHA-256 of the registration's
 bincode (bincode 1.x: fixed-width little-endian integers, u64 lengths) with
 an empty signature, so it binds every field: `consensus.RegisterSubgroveUnsignedBincode`
 computes it from the exact JSON sent. `consensus.RegisterSubgroveTx` sends
-every field, nil lists as `[]` and absent options as `null`, so the chain
-decodes the values the hash covers. The SDK signs DataStorage and FileStorage
+every field, nil lists as `[]`, a nil `Mode` as the chain's default
+DataStorage, and other absent options as `null`, so the chain decodes the
+values the hash covers. The SDK signs DataStorage and FileStorage
 registrations; it refuses to sign a BlockchainIndexing one, whose mode its
-types don't encode.
+types don't encode, and one the chain would refuse for its subgrove id or
+schema indexes (see Subgrove Management).
 
 Ed25519 signs the message's UTF-8 bytes. secp256k1 signs their Keccak-256
 (low-S; the SDK sends DER, and the chain also accepts 64-byte compact r||s).
@@ -238,10 +240,8 @@ err := client.Data.StoreItem(ctx, "users", "user-123", map[string]interface{}{
 // Read the stored value (the API's data route carries no proof)
 response, err := client.Data.Get(ctx, "users", "user-123")
 
-// Fetch the key's GroveDB proof; VerifyProof checks its root against the
-// light client's trusted app hash
+// Fetch the key's GroveDB proof, with its path, key, and height (unverified)
 proof, err := client.Data.GetProof(ctx, "users", "user-123")
-err = client.Data.VerifyProof(ctx, proof)
 ```
 
 `StoreItem` returns once the chain's CheckTx accepts the transaction; the
@@ -260,15 +260,17 @@ query := willow.NewQueryBuilder().
     Limit(10).
     Build()
 
-response, err := client.Data.Query(ctx, "users", query)
+response, err := client.Data.QueryUnverified(ctx, "users", query)
 for _, result := range response.Results {
-    fmt.Println(result.Data) // the matching documents
+    fmt.Println(result.Data) // the matching documents, as the API returns them
 }
 ```
 
 The API's `/query` applies one equality filter, a sort on one field, a
 limit, and an offset. The client refuses a query it wouldn't apply (more
 filters, another operator, full-text search) instead of sending it.
+`Data.Query` returns an unsupported error and sends nothing, because the SDK
+can't verify a query's proof (see Proofs and the light client).
 
 ### Subgrove Management
 
@@ -279,7 +281,6 @@ schema := willow.NewSchemaBuilder("User").
     StringField("name", true).
     StringField("email", true).
     IntField("age", false).
-    HashIndex("email_idx", []string{"email"}).
     Build()
 
 // Register a DataStorage subgrove owned by the identity: a RegisterSubgrove
@@ -299,9 +300,15 @@ err = client.Registration.DeleteSubgrove(ctx, "users")
 
 The schema is sent in the chain's form (`SchemaDefinition.ChainSchemaJSON`):
 a map of field name to type (`string`, `number`, `boolean`, `array`,
-`object`, `bytes`), the required fields, and indexes with their fields and
-uniqueness. For a FileStorage or private registration, read pricing, admins,
-or initial funding, build a `consensus.RegisterSubgroveTx` and sign it:
+`object`, `bytes`) and the required fields; its name and description label
+it in the SDK and are not sent. The chain refuses a DataStorage or FileStorage
+registration whose schema declares indexes, or whose subgrove id isn't 1 to 64
+ASCII letters, digits, `-`, or `_` starting with a letter or digit, so the SDK
+refuses either before signing with a validation error (an index is one added
+with the schema builder's index methods, or a field marked indexed). For a
+FileStorage or private registration, read pricing, admins, or initial funding,
+build a `consensus.RegisterSubgroveTx` and sign it (a nil `Mode` is sent as
+the chain's default, an empty DataStorage):
 
 ```go
 tx := &consensus.RegisterSubgroveTx{
@@ -357,35 +364,36 @@ var result struct {
 err := client.Indexing.ExecuteWithResult(ctx, "uniswap-v3", query, vars, &result)
 ```
 
-### Light Client for Trustless Verification
+### Proofs and the light client
+
+A proof the API returns (from `Data.GetProof`, or with a query) is of the
+state after block `Height`, so its root is the `app_hash` of the CometBFT
+header at `Height+1`. Checking it takes that header verified against the
+validators' commit signatures, a GroveDB verifier that reproduces the chain's
+root for the proof, and, for a query, the returned documents matched to the
+values the proof proves. The SDK doesn't provide these, so `Data.Query` and
+`Data.VerifyProof` return an unsupported error (`willow.IsUnsupported`)
+instead of presenting data as verified, and `Data.QueryUnverified` and
+`Data.GetProof` return what the API sends, unverified.
+
+The `lightclient` package keeps a trusted CometBFT header. Its
+`VerifyHeader` checks a later header's chain id, height and time, the
+trusting period, clock drift, an adjacent header's validator-set hash, and
+the voting power its commit lists; it does not verify the commit signatures.
 
 ```go
 import "github.com/willow-network/willow-go/lightclient"
 
-// Create light client
 lc, err := lightclient.NewLightClient(lightclient.Config{
     ChainID:            "willow-mainnet",
-    ValidatorEndpoints: []string{
-        "http://validator1:26657",
-        "http://validator2:26657",
-    },
-    TrustingPeriod: 24 * time.Hour,
-    AutoSync:       true,
+    ValidatorEndpoints: []string{"http://validator1:26657"},
+    TrustingPeriod:     24 * time.Hour,
 })
 
-// Start background sync
-lc.Start()
-defer lc.Stop()
-
-// Create client with light client
-client, err := willow.NewClient("http://localhost:3031",
-    willow.WithLightClient(lc),
-)
-
-// Query and VerifyProof check a proof's root against the light client's
-// trusted app hash
-proof, err := client.Data.GetProof(ctx, "users", "user-123")
-err = client.Data.VerifyProof(ctx, proof)
+// Pin a header you trust, then read it back
+err = lc.InitializeWithTrustedHeader(trustedBlock)
+header, err := lc.GetLatestTrustedHeader()
+fmt.Println(header.Height, header.AppHash)
 ```
 
 ### Consensus Client
@@ -489,7 +497,7 @@ go run ./examples/basic_usage
 # Data operations - CRUD, queries, batch operations
 go run ./examples/data_operations
 
-# Light client - Trustless verification with multiple validators
+# Light client - a trusted CometBFT header, and what the SDK verifies
 go run ./examples/light_client
 
 # Registration - DIDs, subgroves

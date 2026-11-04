@@ -92,3 +92,62 @@ func TestRegisterSubgroveTxSendsEveryField(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A nil Mode is sent as the chain's default DataStorage (the chain refuses a
+// null mode), and hashes as an omitted mode does.
+func TestRegisterSubgroveTxSendsTheDefaultModeForNil(t *testing.T) {
+	tx := RegisterSubgroveTx{
+		SubgroveID: "sg",
+		Schema:     `{"version":1,"fields":{},"indexes":[],"required_fields":[]}`,
+		OwnerDid:   "did:willow:a",
+	}
+	body, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `"mode":{"DataStorage":{"name":"","writers":[],"free_readers":[],"read_pricing":null}}`; !strings.Contains(string(body), want) {
+		t.Fatalf("%s lacks %s", body, want)
+	}
+	sent, err := RegisterSubgroveUnsignedBincode(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		t.Fatal(err)
+	}
+	delete(fields, "mode")
+	omitted, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaulted, err := RegisterSubgroveUnsignedBincode(omitted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(sent) != string(defaulted) {
+		t.Fatalf("nil Mode bincode %x, omitted mode %x", sent, defaulted)
+	}
+}
+
+// AllowedIndexers is the chain's Option<Vec<String>>: nil is sent as null (any
+// indexer), and a non-nil list, even an empty one, as that list (only the
+// DIDs on it).
+func TestPrivacyConfigAllowedIndexersKeepsNilAndEmptyApart(t *testing.T) {
+	for _, c := range []struct {
+		allowed []string
+		want    string
+	}{
+		{nil, `"allowed_indexers":null`},
+		{[]string{}, `"allowed_indexers":[]`},
+		{[]string{"did:willow:i"}, `"allowed_indexers":["did:willow:i"]`},
+	} {
+		body, err := json.Marshal(PrivacyConfig{AllowedIndexers: c.allowed, CommitmentFrequency: NewCommitmentFrequencyEveryUpdate()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(body), c.want) {
+			t.Errorf("%#v sent as %s, want %s", c.allowed, body, c.want)
+		}
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -145,25 +146,34 @@ func FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID string, nonce
 //
 // It refuses a BlockchainIndexing registration: consensus.SubgroveBlockchainIndexing
 // doesn't encode the chain's indexing mode, so this SDK signs DataStorage and
-// FileStorage registrations only.
+// FileStorage registrations only. A nil Mode is the chain's default
+// DataStorage. It also refuses what the chain refuses in a DataStorage or
+// FileStorage registration: a subgrove id that isn't 1 to 64 ASCII letters,
+// digits, '-', or '_' starting with a letter or digit, and a schema that
+// declares indexes.
 func FormatRegisterSubgroveMessage(tx *consensus.RegisterSubgroveTx) (string, error) {
 	if tx == nil {
 		return "", NewValidationError("no RegisterSubgrove transaction")
 	}
-	if tx.Mode == nil {
-		return "", NewValidationError("RegisterSubgrove needs a mode")
-	}
-	modes := 0
-	for _, set := range []bool{tx.Mode.DataStorage != nil, tx.Mode.FileStorage != nil, tx.Mode.BlockchainIndexing != nil} {
-		if set {
-			modes++
+	if tx.Mode != nil {
+		modes := 0
+		for _, set := range []bool{tx.Mode.DataStorage != nil, tx.Mode.FileStorage != nil, tx.Mode.BlockchainIndexing != nil} {
+			if set {
+				modes++
+			}
+		}
+		if modes != 1 {
+			return "", NewValidationError("RegisterSubgrove needs exactly one mode: DataStorage, FileStorage, or BlockchainIndexing")
+		}
+		if tx.Mode.BlockchainIndexing != nil {
+			return "", NewValidationError("this SDK can't encode a BlockchainIndexing registration, so it won't sign one; it signs DataStorage and FileStorage registrations")
 		}
 	}
-	if modes != 1 {
-		return "", NewValidationError("RegisterSubgrove needs exactly one mode: DataStorage, FileStorage, or BlockchainIndexing")
+	if err := validateStorageSubgroveID(tx.SubgroveID); err != nil {
+		return "", err
 	}
-	if tx.Mode.BlockchainIndexing != nil {
-		return "", NewValidationError("this SDK can't encode a BlockchainIndexing registration, so it won't sign one; it signs DataStorage and FileStorage registrations")
+	if err := refuseSchemaIndexes(tx.Schema); err != nil {
+		return "", err
 	}
 	body, err := json.Marshal(tx)
 	if err != nil {
@@ -180,6 +190,40 @@ func FormatRegisterSubgroveMessage(tx *consensus.RegisterSubgroveTx) (string, er
 		line("Config", hex.EncodeToString(config[:])).
 		line("Nonce", strconv.FormatUint(tx.Nonce, 10)).
 		build()
+}
+
+// validateStorageSubgroveID applies the chain's rule for the id of a
+// DataStorage or FileStorage subgrove: 1 to 64 ASCII letters, digits, '-', or
+// '_', starting with a letter or digit.
+func validateStorageSubgroveID(id string) error {
+	if id == "" || len(id) > 64 {
+		return NewValidationError(fmt.Sprintf("subgrove id %q must be 1 to 64 characters", id))
+	}
+	for i := 0; i < len(id); i++ {
+		c := id[i]
+		alnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+		if i == 0 && !alnum {
+			return NewValidationError(fmt.Sprintf("subgrove id %q must start with an ASCII letter or digit", id))
+		}
+		if !alnum && c != '-' && c != '_' {
+			return NewValidationError(fmt.Sprintf("subgrove id %q may hold only ASCII letters, digits, '-', and '_'", id))
+		}
+	}
+	return nil
+}
+
+// refuseSchemaIndexes refuses a schema (the transaction's schema JSON text)
+// that declares indexes, which the chain refuses in a DataStorage or
+// FileStorage registration. A schema that doesn't parse is left to the
+// encoder and the chain.
+func refuseSchemaIndexes(schema string) error {
+	var parsed struct {
+		Indexes []json.RawMessage `json:"indexes"`
+	}
+	if json.Unmarshal([]byte(schema), &parsed) == nil && len(parsed.Indexes) > 0 {
+		return NewValidationError("the chain doesn't support schema indexes, so a registration whose schema declares them is refused")
+	}
+	return nil
 }
 
 // FormatGrantSubgroveKeyMessage returns the message a GrantSubgroveKey

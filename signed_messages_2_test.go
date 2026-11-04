@@ -360,7 +360,6 @@ func TestRegisterSubgroveMessageNeedsOneEncodableMode(t *testing.T) {
 	var tx consensus.RegisterSubgroveTx
 	decodeExactly(t, loadKATBody(t, "RegisterSubgrove (data)"), &tx)
 	cases := map[string]*consensus.SubgroveMode{
-		"no mode":    nil,
 		"no variant": {},
 		"two modes":  {DataStorage: tx.Mode.DataStorage, FileStorage: &consensus.SubgroveFileStorage{Name: "f"}},
 		"indexing":   {BlockchainIndexing: &consensus.SubgroveBlockchainIndexing{ManifestContent: []byte("x")}},
@@ -374,6 +373,83 @@ func TestRegisterSubgroveMessageNeedsOneEncodableMode(t *testing.T) {
 	}
 	if _, err := FormatRegisterSubgroveMessage(nil); !IsValidationError(err) {
 		t.Errorf("nil transaction: %v", err)
+	}
+}
+
+// A nil Mode is the chain's default, DataStorage with an empty name and
+// lists: it is sent explicitly (the chain refuses a null mode) and signs as
+// the KAT's defaults vector does.
+func TestRegisterSubgroveNilModeIsTheChainsDefault(t *testing.T) {
+	v := loadSignedMessageKAT2(t).vector(t, "RegisterSubgrove (data, defaults)")
+	_, want := kindAndBody(t, v.TransactionJSON)
+	var tx consensus.RegisterSubgroveTx
+	decodeExactly(t, want, &tx)
+	tx.Mode = nil
+	body, err := json.Marshal(tx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameJSON(t, body, want) {
+		t.Fatalf("nil Mode sent as\n %s\nwant\n %s", body, want)
+	}
+	message, err := FormatRegisterSubgroveMessage(&tx)
+	if err != nil || message != v.Message {
+		t.Fatalf("nil Mode message %q, %v; want the KAT's %q", message, err, v.Message)
+	}
+}
+
+// The chain refuses a DataStorage or FileStorage registration whose schema
+// declares indexes or whose subgrove id isn't 1 to 64 ASCII letters, digits,
+// '-', or '_' starting with a letter or digit, so the builder refuses both.
+func TestRegisterSubgroveMessageRefusesWhatTheChainRefuses(t *testing.T) {
+	for _, kat := range []string{"RegisterSubgrove (data)", "RegisterSubgrove (file)"} {
+		var tx consensus.RegisterSubgroveTx
+		decodeExactly(t, loadKATBody(t, kat), &tx)
+		for name, edit := range map[string]func(*consensus.RegisterSubgroveTx){
+			"schema index": func(tx *consensus.RegisterSubgroveTx) {
+				tx.Schema = `{"version":1,"fields":{"a":"string"},"indexes":[{"name":"by_a","fields":["a"],"unique":false}],"required_fields":[]}`
+			},
+			"empty id":          func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "" },
+			"id over 64":        func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = strings.Repeat("a", 65) },
+			"id starts with -":  func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "-a" },
+			"id starts with _":  func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "_a" },
+			"id with a space":   func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "a b" },
+			"id with a slash":   func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "a/b" },
+			"id with a dot":     func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "a.b" },
+			"id not ASCII":      func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "caf\u00e9" },
+			"id with line feed": func(tx *consensus.RegisterSubgroveTx) { tx.SubgroveID = "a\n" },
+		} {
+			c := tx
+			edit(&c)
+			if msg, err := FormatRegisterSubgroveMessage(&c); !IsValidationError(err) || msg != "" {
+				t.Errorf("%s, %s: got %q, %v; want a validation error", kat, name, msg, err)
+			}
+		}
+		for _, id := range []string{"a", "9", "A-b_9", strings.Repeat("z", 64)} {
+			c := tx
+			c.SubgroveID = id
+			if _, err := FormatRegisterSubgroveMessage(&c); err != nil {
+				t.Errorf("%s, id %q: %v", kat, id, err)
+			}
+		}
+	}
+}
+
+// ChainSchemaJSON refuses a schema with an index, and doesn't send the
+// schema's name or description, which the chain's schema has no place for.
+func TestChainSchemaJSONRefusesIndexes(t *testing.T) {
+	for name, schema := range map[string]*SchemaDefinition{
+		"hash index":    NewSchemaBuilder("S").StringField("a", true).HashIndex("by_a", []string{"a"}).Build(),
+		"unique index":  NewSchemaBuilder("S").StringField("a", true).UniqueIndex("by_a", []string{"a"}).Build(),
+		"indexed field": NewSchemaBuilder("S").Field("a", "string", true, true).Build(),
+	} {
+		if got, err := schema.ChainSchemaJSON(); !IsValidationError(err) || got != "" {
+			t.Errorf("%s: got %q, %v; want a validation error", name, got, err)
+		}
+	}
+	got, err := NewSchemaBuilder("S").Description("d").StringField("a", true).Build().ChainSchemaJSON()
+	if want := `{"version":1,"fields":{"a":"string"},"indexes":[],"required_fields":["a"]}`; err != nil || got != want {
+		t.Fatalf("got %q, %v; want %q", got, err, want)
 	}
 }
 
@@ -608,8 +684,7 @@ func TestRegisterSubgroveSignsTheTransactionItSends(t *testing.T) {
 func TestRegisterSubgroveSendsTheRequestsFields(t *testing.T) {
 	srv, txs := txServer(t, 41)
 	client, id := clientFor(t, srv, Ed25519)
-	schema := NewSchemaBuilder("Note").StringField("title", true).IntField("rank", false).
-		UniqueIndex("by_title", []string{"title"}).Build()
+	schema := NewSchemaBuilder("Note").StringField("title", true).IntField("rank", false).Build()
 	req := NewSubgroveBuilder("notes-2", "Notes").Description("Team\nnotes").Schema(*schema).
 		AddWriter(id.DID()).AddReader("did:willow:c").Build()
 	if _, err := client.Registration.RegisterSubgrove(context.Background(), req); err != nil {
@@ -618,7 +693,7 @@ func TestRegisterSubgroveSendsTheRequestsFields(t *testing.T) {
 	body := sentTx(t, txs, "RegisterSubgrove")
 	var tx consensus.RegisterSubgroveTx
 	decodeExactly(t, body, &tx)
-	wantSchema := `{"version":1,"fields":{"rank":"number","title":"string"},"indexes":[{"name":"by_title","fields":["title"],"unique":true}],"required_fields":["title"]}`
+	wantSchema := `{"version":1,"fields":{"rank":"number","title":"string"},"indexes":[],"required_fields":["title"]}`
 	if tx.Schema != wantSchema || tx.Nonce != 42 || tx.Description != "Team\nnotes" ||
 		tx.Mode.DataStorage.Name != "Notes" || tx.Mode.DataStorage.Writers[0] != id.DID() ||
 		tx.Mode.DataStorage.FreeReaders[0] != "did:willow:c" {
@@ -640,6 +715,9 @@ func TestRegisterSubgroveSendsTheRequestsFields(t *testing.T) {
 		"reward rate":   NewSubgroveBuilder("s", "S").RewardRate(5).Build(),
 		"field type":    NewSubgroveBuilder("s", "S").Schema(SchemaDefinition{Fields: []SchemaField{{Name: "x", Type: "date"}}}).Build(),
 		"line break":    NewSubgroveBuilder("s\n", "S").Build(),
+		"schema index":  NewSubgroveBuilder("s", "S").Schema(*NewSchemaBuilder("S").StringField("x", true).HashIndex("by_x", []string{"x"}).Build()).Build(),
+		"indexed field": NewSubgroveBuilder("s", "S").Schema(*NewSchemaBuilder("S").Field("x", "string", true, true).Build()).Build(),
+		"subgrove id":   NewSubgroveBuilder("my subgrove", "S").Build(),
 	} {
 		if _, err := client.Registration.RegisterSubgrove(context.Background(), bad); !IsValidationError(err) {
 			t.Errorf("%s: got %v, want a validation error", name, err)

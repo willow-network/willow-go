@@ -106,13 +106,13 @@ func main() {
 	// 6. Build a subgrove registration request using the SDK builders
 	fmt.Println("\n6. Building a registration request...")
 
-	// Schema builder
+	// Schema builder. The chain doesn't support schema indexes, so a schema
+	// with one is refused before signing.
 	schema := willow.NewSchemaBuilder("User").
 		Description("User profile schema").
 		StringField("name", true).
 		StringField("email", true).
 		IntField("age", false).
-		HashIndex("email_idx", []string{"email"}).
 		Build()
 	fmt.Printf("   Schema built: %s with %d fields\n", schema.Name, len(schema.Fields))
 

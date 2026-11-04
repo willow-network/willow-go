@@ -1,9 +1,9 @@
 // Light client example for the Willow Go SDK
 //
 // This example demonstrates:
-// - Configuring a light client for trustless verification
-// - Verifying data against multiple validators
-// - Exporting and importing trusted state
+// - Configuring a light client that keeps a trusted CometBFT header
+// - Fetching a key's proof, and what the SDK does and doesn't verify
+// - Exporting trusted state
 //
 // Run with: go run ./examples/light_client
 
@@ -88,7 +88,7 @@ func main() {
 	// 5. Store test data
 	fmt.Println("\n5. Storing test data...")
 	testData := map[string]interface{}{
-		"message":   "This data will be cryptographically verified",
+		"message":   "This data has a GroveDB proof",
 		"timestamp": time.Now().Unix(),
 		"verified":  true,
 	}
@@ -100,8 +100,10 @@ func main() {
 		fmt.Println("   Data stored")
 	}
 
-	// 6. Retrieve the data, then its proof, and check the proof's root against
-	// the light client's trusted app hash
+	// 6. Retrieve the data, then its proof. The proof is of the state after
+	// block proof.Height, whose root is the app_hash of the header at
+	// proof.Height+1; the SDK can't verify it against the chain, so
+	// VerifyProof returns an unsupported error.
 	fmt.Println("\n6. Retrieving data and its proof...")
 
 	response, err := client.Data.Get(ctx, "secure-data", "entry-1")
@@ -114,21 +116,22 @@ func main() {
 	}
 	if proof, err := client.Data.GetProof(ctx, "secure-data", "entry-1"); err != nil {
 		fmt.Printf("   Note: %v\n", err)
-	} else if err := client.Data.VerifyProof(ctx, proof); err != nil {
-		fmt.Printf("   Proof not verified: %v\n", err)
 	} else {
-		fmt.Println("   Proof root matches the light client's trusted app hash")
+		fmt.Printf("   Proof of %d bytes, state after block %d (unverified)\n", len(proof.Proof), proof.Height)
+		if err := client.Data.VerifyProof(ctx, proof); willow.IsUnsupported(err) {
+			fmt.Printf("   Note: %v\n", err)
+		}
 	}
 
-	// 7. Query with verification
-	fmt.Println("\n7. Querying with trustless verification...")
+	// 7. Query: the documents are the API's, unverified
+	fmt.Println("\n7. Querying...")
 	query := willow.NewQueryBuilder().Limit(10).Build()
 
-	queryResponse, err := client.Data.Query(ctx, "secure-data", query)
+	queryResponse, err := client.Data.QueryUnverified(ctx, "secure-data", query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Printf("   Query returned %d documents\n", len(queryResponse.Results))
+		fmt.Printf("   Query returned %d documents (unverified)\n", len(queryResponse.Results))
 	}
 
 	// 8. Export trusted state for persistence
@@ -154,24 +157,12 @@ func main() {
 		fmt.Printf("   Last error: %s\n", syncStatus.LastSyncError)
 	}
 
-	// 10. Show verification comparison
-	fmt.Println("\n10. Verification comparison...")
-	fmt.Println("\n   LIGHT CLIENT (trustless):")
-	fmt.Println("   + Verifies validator signatures (2/3+ threshold)")
-	fmt.Println("   + Validates block header chain")
-	fmt.Println("   + Verifies proofs against consensus app_hash")
-	fmt.Println("   + No trust in any single node required")
-	fmt.Println("   - Slightly higher latency")
-
-	fmt.Println("   STANDARD VERIFICATION (root hash):")
-	fmt.Println("   + Fast verification")
-	fmt.Println("   + Verifies GroveDB proofs locally")
-	fmt.Println("   - Trusts that API returns correct root hash")
-
-	fmt.Println("   UNVERIFIED (performance mode):")
-	fmt.Println("   + Fastest response times")
-	fmt.Println("   - Trusts the node completely")
-	fmt.Println("   - Only use with trusted nodes")
+	// 10. What the light client checks
+	fmt.Println("\n10. What the light client checks...")
+	fmt.Println("   VerifyHeader checks a later header's chain id, height and time,")
+	fmt.Println("   the trusting period, clock drift, an adjacent header's")
+	fmt.Println("   validator-set hash, and the voting power its commit lists.")
+	fmt.Println("   It does not verify commit signatures.")
 
 	fmt.Println("\nLight client example complete!")
 }

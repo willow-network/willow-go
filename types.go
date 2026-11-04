@@ -459,10 +459,14 @@ type HealthStatus struct {
 
 // DataProof represents a proof for data retrieval.
 type DataProof struct {
-	Proof      []byte `json:"proof"`
-	RootHash   string `json:"root_hash"`
-	Height     int64  `json:"height"`
-	VerifiedAt int64  `json:"verified_at"`
+	Proof []byte `json:"proof"`
+	// Path is the GroveDB path the proof descends to, and Key the key it
+	// proves under it.
+	Path       [][]byte `json:"path,omitempty"`
+	Key        []byte   `json:"key,omitempty"`
+	RootHash   string   `json:"root_hash"`
+	Height     int64    `json:"height"`
+	VerifiedAt int64    `json:"verified_at"`
 }
 
 // DataResponse represents the response from a data retrieval operation.
