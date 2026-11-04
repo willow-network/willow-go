@@ -405,6 +405,48 @@ func TestEthReadsOfZeroValuesAndAbsentAccounts(t *testing.T) {
 	}
 }
 
+// An address is 20 bytes and a slot 32. A key of another length hashes to
+// another path in the trie, so its absence says nothing about the 20- or
+// 32-byte key it would be read as: the walk refuses it, in a call's state
+// proofs as in a state read's.
+func TestWalkRefusesKeysOfAnotherLength(t *testing.T) {
+	ctx := context.Background()
+	funded := append(make([]byte, 4), bytes.Repeat([]byte{0x77}, 16)...)
+	token := bytes.Repeat([]byte{0x11}, 20)
+	storage := newTestTrie([][]byte{word(2)}, [][]byte{storageValue(1000000)})
+	codeHash := keccak256([]byte{0x60, 0x80})
+	state := newTestTrie([][]byte{funded, token}, [][]byte{
+		rlpEncodeAccount(1, big.NewInt(1000), emptyTrieRoot, codeHash),
+		rlpEncodeAccount(1, big.NewInt(0), storage.root(), codeHash),
+	})
+	gethEmpty := wireAccountState{Balance: make([]int, 32), StorageHash: make([]int, 32), CodeHash: make([]int, 32)}
+	tokenState := wireAccountState{Nonce: 1, Balance: make([]int, 32), StorageHash: toInts(storage.root()), CodeHash: toInts(codeHash)}
+
+	honest := testStateProof(state, token, tokenState, storage, [][]byte{word(2)}, []int64{1000000})
+	if err := walkStateProof(&honest); err != nil {
+		t.Fatalf("the honest proof: %v", err)
+	}
+
+	// The funded account claimed empty, and the token's slot 2 claimed zero,
+	// each under a key of another length that the trie doesn't hold.
+	cases := map[string]wireStateProof{
+		"a 16-byte address": testStateProof(state, funded[4:], gethEmpty, newTestTrie(nil, nil), nil, nil),
+		"a 21-byte address": testStateProof(state, append([]byte{0}, funded...), gethEmpty, newTestTrie(nil, nil), nil, nil),
+		"a 1-byte slot":     testStateProof(state, token, tokenState, storage, [][]byte{{0x02}}, []int64{0}),
+		"a 31-byte slot":    testStateProof(state, token, tokenState, storage, [][]byte{word(2)[1:]}, []int64{0}),
+		"a 33-byte slot":    testStateProof(state, token, tokenState, storage, [][]byte{append([]byte{0}, word(2)...)}, []int64{0}),
+	}
+	for name, p := range cases {
+		if err := walkStateProof(&p); err == nil || !contains(err.Error(), "bytes, not") {
+			t.Errorf("%s: walk = %v, want a length refusal", name, err)
+		}
+		eth, _ := ethServer(t, &wireEnvelope{Answer: "AA", StateRoot: p.StateRoot, BlockRange: [2]uint64{9, 9}, StateProofs: []wireStateProof{honest, p}})
+		if call, err := eth.GetCall(ctx, map[string]interface{}{}, 9); err == nil {
+			t.Errorf("%s: a call's state proof was accepted: %+v", name, call.AccessStateReads)
+		}
+	}
+}
+
 // The tests' tries are Ethereum's: testTrie gives the root of the secure-trie
 // vector "emptyValues" in Ethereum's trie tests, and its proofs walk.
 func TestTestTrieIsEthereums(t *testing.T) {

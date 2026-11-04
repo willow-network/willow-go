@@ -236,7 +236,7 @@ func (e *EthOperations) GetState(
 // call touched (see EthOperations). No proof binds the result. It returns an
 // error, rather than the answer, when a state proof isn't for blockNumber or
 // isn't under the answer's state root, or, in EthWalkProofs mode, when a
-// proof doesn't walk.
+// proof doesn't walk or its address isn't 20 bytes or a slot 32 bytes.
 func (e *EthOperations) GetCall(
 	ctx context.Context,
 	tx map[string]interface{},
@@ -434,9 +434,16 @@ var emptyCodeHash = keccak256(nil)
 // claimed empty, with nonce and balance zero and the empty storage root and
 // code hash (or zero hashes, as geth names them), and every slot asked of it
 // zero. A zero value is never stored, so it must be proved absent.
+//
+// The address must be 20 bytes and every slot 32: a key of another length
+// hashes to another path, so its absence says nothing about the address or
+// slot it would be read as.
 func walkStateProof(proof *wireStateProof) error {
 	stateRoot := intsToBytes(proof.StateRoot)
-	address := intsToBytes(proof.Address)
+	address, err := wireBytes(proof.Address, 20, "the proof's address")
+	if err != nil {
+		return err
+	}
 	addrHash := keccak256(address)
 
 	nonce := proof.AccountState.Nonce
@@ -464,7 +471,10 @@ func walkStateProof(proof *wireStateProof) error {
 	}
 
 	for i, sp := range proof.StorageProofs {
-		slot := intsToBytes(sp.Slot)
+		slot, err := wireBytes(sp.Slot, 32, fmt.Sprintf("storage proof %d's slot", i))
+		if err != nil {
+			return err
+		}
 		value := new(big.Int).SetBytes(intsToBytes(sp.Value))
 		nodes := intsToBytesSlices(sp.Proof.ProofNodes)
 		leaf, found, err := mptLookup(storageHash, keccak256(slot), nodes)
