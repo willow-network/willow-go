@@ -62,9 +62,16 @@ type FileOperations struct {
 	client *Client
 }
 
-// Upload uploads a file to a FileStorage subgrove.
-// If signing is non-nil, the transaction will be signed with the provided credentials.
+// Upload uploads a file to a FileStorage subgrove: it sends the file's
+// manifest as a StoreFileManifest transaction signed with signing, then its
+// chunks to the storage node. signing must name the owner (OwnerDID) and
+// carry a SignFunc: without them Upload sends nothing and returns a
+// validation error, as the chain refuses a manifest with no owner or
+// signature.
 func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
+	if err := checkFileSigning("Upload", signing); err != nil {
+		return nil, err
+	}
 	chunkSize := DefaultChunkSize
 	chunks := chunkData(data, chunkSize)
 	chunkCount := len(chunks)
@@ -89,27 +96,20 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 		ChunkSize:       uint32(chunkSize),
 		ChunkMerkleRoot: merkleRoot,
 	}
-	var signatureBytes consensus.ByteArray
-	publicKeyID := ""
-
-	if signing != nil {
-		fields.OwnerDID = signing.OwnerDID
-		fields.Nonce = signing.Nonce
-		publicKeyID = signing.PublicKeyID
-
-		message, err := FormatStoreFileManifestMessage(fields)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
-		}
-		sig, err := signing.SignFunc([]byte(message))
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
-		}
-		decoded, err := decodeSignatureHex(sig)
-		if err != nil {
-			return nil, err
-		}
-		signatureBytes = decoded
+	fields.OwnerDID = signing.OwnerDID
+	fields.Nonce = signing.Nonce
+	publicKeyID := signing.PublicKeyID
+	message, err := FormatStoreFileManifestMessage(fields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign store file tx: %w", err)
+	}
+	sig, err := signing.SignFunc([]byte(message))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign store file tx: %w", err)
+	}
+	signatureBytes, err := decodeSignatureHex(sig)
+	if err != nil {
+		return nil, err
 	}
 
 	// Submit StoreFileManifestTx to consensus, carrying exactly the signed
@@ -302,32 +302,25 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 	return result.Files, nil
 }
 
-// Delete deletes a file (submits DeleteFileManifestTx to consensus).
-// If signing is non-nil, the transaction will be signed with the provided credentials.
+// Delete deletes a file: it sends a DeleteFileManifest transaction signed
+// with signing, which must name the owner (OwnerDID) and carry a SignFunc;
+// without them Delete sends nothing and returns a validation error.
 func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigningOptions) error {
-	ownerDID := ""
-	var signatureBytes consensus.ByteArray
-	publicKeyID := ""
-	var nonce uint64
-
-	if signing != nil {
-		ownerDID = signing.OwnerDID
-		publicKeyID = signing.PublicKeyID
-		nonce = signing.Nonce
-
-		message, err := FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID, nonce)
-		if err != nil {
-			return fmt.Errorf("failed to sign delete file tx: %w", err)
-		}
-		sig, err := signing.SignFunc([]byte(message))
-		if err != nil {
-			return fmt.Errorf("failed to sign delete file tx: %w", err)
-		}
-		decoded, err := decodeSignatureHex(sig)
-		if err != nil {
-			return err
-		}
-		signatureBytes = decoded
+	if err := checkFileSigning("Delete", signing); err != nil {
+		return err
+	}
+	ownerDID, publicKeyID, nonce := signing.OwnerDID, signing.PublicKeyID, signing.Nonce
+	message, err := FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID, nonce)
+	if err != nil {
+		return fmt.Errorf("failed to sign delete file tx: %w", err)
+	}
+	sig, err := signing.SignFunc([]byte(message))
+	if err != nil {
+		return fmt.Errorf("failed to sign delete file tx: %w", err)
+	}
+	signatureBytes, err := decodeSignatureHex(sig)
+	if err != nil {
+		return err
 	}
 
 	deleteTx := map[string]interface{}{
@@ -356,8 +349,8 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 // Client.NextNonce(ctx, nodeDID)). It is signed over
 // FormatUnregisterStorageNodeMessage, which binds the node and the nonce.
 func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSigningOptions) error {
-	if signing == nil {
-		return fmt.Errorf("signing options are required to unregister a storage node")
+	if signing == nil || signing.SignFunc == nil {
+		return fmt.Errorf("signing options with a SignFunc are required to unregister a storage node")
 	}
 
 	message, err := FormatUnregisterStorageNodeMessage(nodeDID, signing.Nonce)
@@ -388,6 +381,16 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	}
 	if err := f.client.submitSigned(context.Background(), nodeDID, signing.Nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
+	}
+	return nil
+}
+
+// checkFileSigning refuses signing options a file write can't sign with: none,
+// or ones without an owner DID or a SignFunc.
+func checkFileSigning(op string, signing *FileSigningOptions) error {
+	if signing == nil || signing.OwnerDID == "" || signing.SignFunc == nil {
+		return NewValidationError(op + ": signing options with an OwnerDID and a SignFunc are required; " +
+			"the chain refuses a file manifest transaction with no owner or signature")
 	}
 	return nil
 }

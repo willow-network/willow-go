@@ -127,6 +127,49 @@ func TestDownloadReadsAChunkUpTo2MiB(t *testing.T) {
 	}
 }
 
+// Upload and Delete refuse, sending nothing, without signing options that
+// name an owner and a SignFunc: the chain refuses a manifest transaction with
+// no owner or signature.
+func TestFileWritesNeedSigning(t *testing.T) {
+	var requests int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&requests, 1)
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte(`{"success":true,"data":{"tx_hash":"AB","code":0,"log":""}}`))
+	}))
+	t.Cleanup(srv.Close)
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := vectorIdentity(t, Ed25519)
+	noOwner, noSignFunc := fileSigning(id, 1), fileSigning(id, 1)
+	noOwner.OwnerDID, noSignFunc.SignFunc = "", nil
+	for name, signing := range map[string]*FileSigningOptions{"no signing": nil, "no owner": noOwner, "no SignFunc": noSignFunc} {
+		for write, call := range map[string]func() error{
+			"Upload": func() error {
+				_, err := client.Files.Upload("sg", "f", "f.txt", []byte("x"), srv.URL, signing)
+				return err
+			},
+			"Delete": func() error { return client.Files.Delete("sg", "f", signing) },
+		} {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s, %s: panicked: %v", write, name, r)
+					}
+				}()
+				if err := call(); !IsValidationError(err) {
+					t.Errorf("%s, %s: %v; want a validation error", write, name, err)
+				}
+			}()
+		}
+	}
+	if n := atomic.LoadInt64(&requests); n != 0 {
+		t.Fatalf("sent %d requests without signing", n)
+	}
+}
+
 // Download and Upload talk to the storage node under the client's timeout
 // (WithTimeout), not without one.
 func TestStorageNodeRequestsTimeOut(t *testing.T) {
@@ -154,7 +197,10 @@ func TestStorageNodeRequestsTimeOut(t *testing.T) {
 	}
 	for name, call := range map[string]func() error{
 		"Download": func() error { _, err := client.Files.Download("sg", "f", srv.URL); return err },
-		"Upload":   func() error { _, err := client.Files.Upload("sg", "f", "f.txt", data, srv.URL, nil); return err },
+		"Upload": func() error {
+			_, err := client.Files.Upload("sg", "f", "f.txt", data, srv.URL, fileSigning(vectorIdentity(t, Ed25519), 1))
+			return err
+		},
 	} {
 		start := time.Now()
 		err := call()
