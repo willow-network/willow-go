@@ -103,6 +103,8 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 //   - QuerySourceAuto (default): indexer if one serves this subgrove, else
 //     validator. On indexer failure, falls back to validator with
 //     Fallback=true in the returned result.
+//
+// It tries at most the three best-scored indexers serving the subgrove.
 func (i *IndexingOperations) GraphQLQueryWithSource(
 	ctx context.Context,
 	subgroveID string,
@@ -148,6 +150,11 @@ func (i *IndexingOperations) SqlQueryWithSource(
 		ctx, i.client, "sql", subgroveID, bodyBytes, source,
 	)
 }
+
+// maxIndexerCandidates is how many indexers a routed query tries, the best
+// scored first, before it fails (QuerySourceIndexer) or falls back to the API
+// (QuerySourceAuto).
+const maxIndexerCandidates = 3
 
 // routeQuery is the shared routing helper used by both GraphQL and SQL
 // source-routed variants.
@@ -235,6 +242,7 @@ func routeQuery[T any](
 		if err != nil {
 			return nil, err
 		}
+		candidates = candidates[:min(len(candidates), maxIndexerCandidates)]
 		if len(candidates) == 0 {
 			return nil, &NoIndexersReachableError{
 				SubgroveID: subgroveID,
@@ -260,6 +268,7 @@ func routeQuery[T any](
 
 	default: // QuerySourceAuto
 		candidates, _ := c.Indexers.ForSubgrove(ctx, subgroveID)
+		candidates = candidates[:min(len(candidates), maxIndexerCandidates)]
 		hadCandidates := len(candidates) > 0
 		for _, info := range candidates {
 			result, err := callIndexer(info)
