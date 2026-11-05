@@ -162,10 +162,42 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	}, nil
 }
 
-// Download downloads a file from a FileStorage subgrove.
+// The chain refuses a file manifest of more than maxFileSize bytes or
+// maxChunkCount chunks.
+const (
+	maxFileSize   = 1 << 30
+	maxChunkCount = maxFileSize / 4096
+)
+
+// checkFileShape refuses a manifest the chain would refuse for its sizes: no
+// data, more than maxFileSize bytes or maxChunkCount chunks, or a ChunkCount
+// that chunks of ChunkSize bytes, the last one partial, don't make TotalSize
+// with.
+func checkFileShape(m *FileManifest) error {
+	count, size := uint64(m.ChunkCount), uint64(m.ChunkSize)
+	switch {
+	case m.TotalSize == 0 || m.TotalSize > maxFileSize:
+		return fmt.Errorf("the manifest's file is %d bytes, not 1 to %d", m.TotalSize, maxFileSize)
+	case count == 0 || count > maxChunkCount:
+		return fmt.Errorf("the manifest's file is %d chunks, not 1 to %d", count, maxChunkCount)
+	case m.TotalSize > count*size || m.TotalSize <= (count-1)*size:
+		return fmt.Errorf("%d chunks of %d bytes don't make the manifest's %d-byte file", count, size, m.TotalSize)
+	}
+	return nil
+}
+
+// Download downloads a file from a FileStorage subgrove: the chunks its
+// manifest (see Metadata) names, each the length the manifest makes it, which
+// must hash to the manifest's chunk Merkle root and content hash. It refuses a
+// manifest the chain would refuse for its sizes (no data, more than 1 GiB or
+// 262,144 chunks, or a chunk count its total and chunk sizes don't make) before
+// it asks for any chunk.
 func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
 	manifest, err := f.Metadata(subgroveID, fileKey)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkFileShape(manifest); err != nil {
 		return nil, err
 	}
 
@@ -178,10 +210,17 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 		if err != nil {
 			return nil, fmt.Errorf("failed to download chunk %d: %w", i, err)
 		}
-		chunk, err := io.ReadAll(resp.Body)
+		want := uint64(manifest.ChunkSize)
+		if i == manifest.ChunkCount-1 {
+			want = manifest.TotalSize - uint64(i)*want
+		}
+		chunk, err := io.ReadAll(io.LimitReader(resp.Body, int64(want)+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunk %d: %w", i, err)
+		}
+		if uint64(len(chunk)) > want {
+			return nil, fmt.Errorf("chunk %d is longer than the %d bytes the manifest makes it", i, want)
 		}
 		chunkHashes = append(chunkHashes, sha256.Sum256(chunk))
 		fileData = append(fileData, chunk...)
