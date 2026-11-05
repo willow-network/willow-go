@@ -29,6 +29,9 @@ type IndexingOperations struct {
 // this SDK verifies no header (see the lightclient package), so it doesn't
 // present a GraphQL answer as verified. QueryUnverified sends the query and
 // returns its answer unverified.
+//
+// Deprecated: Query always fails; use QueryUnverified, which returns the
+// answer unverified.
 func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	return nil, NewUnsupportedError("Indexing.Query: this SDK can't verify a GraphQL answer against the chain; QueryUnverified sends the query and returns its answer unverified")
 }
@@ -413,6 +416,8 @@ func (i *IndexingOperations) GetIndexer(ctx context.Context, indexerID string) (
 // GetIndexerStatus returns an unsupported-operation error and sends nothing:
 // the API serves no per-subgrove indexer status route. GetIndexer reads an
 // indexer, with the subgroves it serves and its status.
+//
+// Deprecated: GetIndexerStatus always fails; use GetIndexer.
 func (i *IndexingOperations) GetIndexerStatus(ctx context.Context, indexerID, subgroveID string) (*IndexerInfo, error) {
 	return nil, NewUnsupportedError("GetIndexerStatus: the API serves no per-subgrove indexer status route; GetIndexer reads an indexer, with the subgroves it serves and its status")
 }

@@ -19,6 +19,8 @@ type DataOperations struct {
 
 // Store returns an unsupported-operation error and sends nothing: data is
 // written by a StoreData transaction, which needs a key. Use StoreItem.
+//
+// Deprecated: Store always fails; use StoreItem.
 func (d *DataOperations) Store(ctx context.Context, subgroveID string, data map[string]interface{}) error {
 	return NewUnsupportedError("Store: data is written by a StoreData transaction sent to POST /tx/submit, which needs a key; use StoreItem")
 }
@@ -108,6 +110,10 @@ func (d *DataOperations) getValue(ctx context.Context, path, key string) (*DataR
 // Update returns an unsupported-operation error and sends nothing: the API's
 // REST data routes refuse writes, and data is updated by an UpdateData
 // transaction, which this SDK does not build.
+//
+// Deprecated: Update always fails, and this SDK has no replacement: it builds
+// no UpdateData transaction (the chain refuses a StoreData to a key that
+// holds data).
 func (d *DataOperations) Update(ctx context.Context, subgroveID, key string, data map[string]interface{}) error {
 	return NewUnsupportedError("Update: the API's REST data routes refuse writes; data is updated by an UpdateData transaction sent to POST /tx/submit, which this SDK does not build")
 }
@@ -115,6 +121,9 @@ func (d *DataOperations) Update(ctx context.Context, subgroveID, key string, dat
 // Delete returns an unsupported-operation error and sends nothing: the API's
 // REST data routes refuse writes, and data is deleted by a DeleteData
 // transaction, which this SDK does not build.
+//
+// Deprecated: Delete always fails, and this SDK has no replacement: it builds
+// no DeleteData transaction.
 func (d *DataOperations) Delete(ctx context.Context, subgroveID, key string) error {
 	return NewUnsupportedError("Delete: the API's REST data routes refuse writes; data is deleted by a DeleteData transaction sent to POST /tx/submit, which this SDK does not build")
 }
@@ -124,6 +133,8 @@ func (d *DataOperations) Delete(ctx context.Context, subgroveID, key string) err
 // StoreData transaction per item under its own nonce; at most 24 can be in
 // flight per identity, so past that wait for earlier ones to land
 // (Client.WaitUntilLanded).
+//
+// Deprecated: BatchStore always fails; store each item with StoreItem.
 func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, items []StoreRequest) error {
 	return NewUnsupportedError("BatchStore: the API serves no batch write route; store each item with StoreItem, " +
 		"one StoreData transaction per item under its own nonce; at most 24 can be in flight per identity, " +
@@ -138,6 +149,9 @@ func (d *DataOperations) BatchStore(ctx context.Context, subgroveID string, item
 // root reproduced, and the returned documents matched to the values the proof
 // proves. This SDK does none of these (see VerifyProof), so it doesn't present
 // a query as verified. QueryUnverified sends the query and returns its
+// documents unverified.
+//
+// Deprecated: Query always fails; use QueryUnverified, which returns the
 // documents unverified.
 func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	return nil, NewUnsupportedError("Query: this SDK can't verify a query's proof against the chain (see VerifyProof); QueryUnverified sends the query and returns its documents unverified")
@@ -308,6 +322,10 @@ func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (
 // SDK doesn't verify CometBFT headers, and its GroveDB verifier doesn't
 // reproduce the chain's root for every proof, so it doesn't present a proof
 // as verified.
+//
+// Deprecated: VerifyProof always fails, and this SDK has no replacement: no
+// method in it verifies a proof against the chain. GetProof returns a proof
+// unverified.
 func (d *DataOperations) VerifyProof(ctx context.Context, proof *DataProof) error {
 	return NewUnsupportedError("VerifyProof: this SDK doesn't verify CometBFT headers, and its GroveDB verifier doesn't reproduce the chain's root for every proof, so it can't verify a proof against the chain")
 }

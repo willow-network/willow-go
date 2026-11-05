@@ -112,6 +112,9 @@ func (r *RegistrationOperations) ListSubgroves(ctx context.Context) ([]SubgroveR
 // API serves no subgrove update route. A subgrove is changed by
 // UpdateSubgroveReadPricing, UpdateSubgroveFreeReaders, or ReplaceSubgrove
 // transactions sent to POST /tx/submit, which this SDK does not build.
+//
+// Deprecated: UpdateSubgrove always fails, and this SDK has no replacement:
+// it builds none of the transactions that change a subgrove.
 func (r *RegistrationOperations) UpdateSubgrove(ctx context.Context, subgroveID string, updates map[string]interface{}) (*SubgroveRegistration, error) {
 	return nil, NewUnsupportedError("UpdateSubgrove: the API serves no subgrove update route; a subgrove is changed by UpdateSubgroveReadPricing, UpdateSubgroveFreeReaders, or ReplaceSubgrove transactions sent to POST /tx/submit, which this SDK does not build")
 }
@@ -156,6 +159,11 @@ func (r *RegistrationOperations) GetPermissions(ctx context.Context, did string)
 // the API serves no permission write route. A subgrove's permissions (its
 // owner, admins, writers, and readers) are written by its RegisterSubgrove
 // transaction (see RegisterSubgrove).
+//
+// Deprecated: GrantPermission always fails; name a subgrove's writers and
+// readers when RegisterSubgrove registers it (RegisterSubgroveRequest's
+// Writers and Readers), or its admins in a consensus.RegisterSubgroveTx you
+// build.
 func (r *RegistrationOperations) GrantPermission(ctx context.Context, permission *Permission) error {
 	return NewUnsupportedError("GrantPermission: the API serves no permission write route; a subgrove's permissions (owner, admins, writers, readers) are written by its RegisterSubgrove transaction")
 }
@@ -163,6 +171,10 @@ func (r *RegistrationOperations) GrantPermission(ctx context.Context, permission
 // RevokePermission returns an unsupported-operation error and sends nothing:
 // the API serves no permission write route. A subgrove's permissions are
 // written by its RegisterSubgrove transaction (see RegisterSubgrove).
+//
+// Deprecated: RevokePermission always fails, and this SDK has no
+// replacement: a subgrove's permissions are set by the transaction that
+// registers it (see RegisterSubgrove).
 func (r *RegistrationOperations) RevokePermission(ctx context.Context, did, subgroveID string) error {
 	return NewUnsupportedError("RevokePermission: the API serves no permission write route; a subgrove's permissions (owner, admins, writers, readers) are written by its RegisterSubgrove transaction")
 }

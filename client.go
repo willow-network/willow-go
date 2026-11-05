@@ -351,6 +351,9 @@ func (c *Client) GetComputedFields(datasetID string) (ComputedFieldSet, bool) {
 // GenerateDID), not chosen. Because the fee for registration is paid from the
 // derived id's own balance, a new DID must be funded (a token transfer of at
 // least the registration fee to identity.DID()) before it is registered.
+//
+// Deprecated: RegisterDID always fails, and this SDK has no replacement: it
+// builds no RegisterDid transaction.
 func (c *Client) RegisterDID(ctx context.Context, didDocument *DidDocument) (*DidDocument, error) {
 	return nil, NewUnsupportedError("RegisterDID: the API serves no DID registration route; a DID is registered by a RegisterDid transaction sent to POST /tx/submit, which this SDK does not build")
 }
