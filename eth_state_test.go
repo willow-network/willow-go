@@ -747,3 +747,15 @@ func repeatInt(v, n int) []int {
 	}
 	return out
 }
+
+// NewEthOperations without a client uses one with a timeout, and a caller's
+// client as it is.
+func TestNewEthOperationsDefaultClientTimesOut(t *testing.T) {
+	if timeout := NewEthOperations("http://indexer", nil).http.Timeout; timeout <= 0 {
+		t.Errorf("the default client's timeout is %v", timeout)
+	}
+	own := &http.Client{}
+	if got := NewEthOperations("http://indexer", own).http; got != own {
+		t.Errorf("the caller's client was replaced")
+	}
+}

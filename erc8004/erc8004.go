@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"time"
 )
 
 // LinkEthAddressTx links an Ethereum address to a Willow DID.
@@ -173,11 +174,11 @@ type Client struct {
 	http   *http.Client
 }
 
-// NewClient creates a new ERC-8004 client.
+// NewClient creates a new ERC-8004 client, whose requests time out after 30 s.
 func NewClient(apiURL string) *Client {
 	return &Client{
 		apiURL: apiURL,
-		http:   http.DefaultClient,
+		http:   &http.Client{Timeout: 30 * time.Second},
 	}
 }
 

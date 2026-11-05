@@ -58,6 +58,10 @@ type Client struct {
 // ClientOption is a functional option for configuring the Client.
 type ClientOption func(*Client) error
 
+// defaultTimeout is the timeout of the HTTP clients the SDK makes when the
+// caller gives none.
+const defaultTimeout = 30 * time.Second
+
 // NewClient creates a new Willow client with the given API URL and options.
 func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 	parsedURL, err := url.Parse(strings.TrimSuffix(apiURL, "/"))
@@ -67,7 +71,7 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 
 	client := &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultTimeout,
 		},
 		baseURL:           parsedURL,
 		retryConfig:       DefaultRetryConfig(),

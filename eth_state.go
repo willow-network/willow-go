@@ -172,9 +172,12 @@ type EthOperations struct {
 	Mode           EthProofMode
 }
 
+// NewEthOperations reads Ethereum state through the indexer at
+// indexerBaseURL with httpClient, or, when it is nil, a client with a 30 s
+// timeout.
 func NewEthOperations(indexerBaseURL string, httpClient *http.Client) *EthOperations {
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
 	return &EthOperations{
 		indexerBaseURL: strings.TrimRight(indexerBaseURL, "/"),

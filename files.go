@@ -142,7 +142,7 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	for i, chunk := range chunks {
 		url := fmt.Sprintf("%s/upload/%s/%s?chunk_index=%d&chunk_count=%d&content_hash=%s",
 			storageNodeEndpoint, subgroveID, fileKey, i, chunkCount, contentHashHex)
-		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(chunk))
+		resp, err := f.storageClient().Post(url, "application/octet-stream", bytes.NewReader(chunk))
 		if err != nil {
 			return nil, fmt.Errorf("failed to upload chunk %d: %w", i, err)
 		}
@@ -160,6 +160,13 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 		ChunkMerkleRoot: hex.EncodeToString(merkleRoot[:]),
 		StorageNodes:   []string{storageNodeEndpoint},
 	}, nil
+}
+
+// storageClient is the HTTP client Upload and Download talk to a storage node
+// with: it has the client's timeout (WithTimeout), but not the client's
+// transport, which with WithAPIKey sends the API key, meant for the API alone.
+func (f *FileOperations) storageClient() *http.Client {
+	return &http.Client{Timeout: f.client.httpClient.Timeout}
 }
 
 // The chain refuses a file manifest of more than maxFileSize bytes or
@@ -206,7 +213,7 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 	for i := uint32(0); i < manifest.ChunkCount; i++ {
 		url := fmt.Sprintf("%s/chunk/%s/%s/%d?content_hash=%s",
 			storageNodeEndpoint, subgroveID, fileKey, i, manifest.ContentHash)
-		resp, err := http.Get(url)
+		resp, err := f.storageClient().Get(url)
 		if err != nil {
 			return nil, fmt.Errorf("failed to download chunk %d: %w", i, err)
 		}

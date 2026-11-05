@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // fileServer serves manifest from the API's /files route and chunk(i) from
@@ -105,5 +107,42 @@ func TestDownloadReadsTheChunksTheManifestMakes(t *testing.T) {
 	client, node, _ = fileServer(t, honest, func(i int) []byte { return []byte(strings.Repeat("x", 1<<20)) })
 	if _, err := client.Files.Download("sg", "f", node); err == nil || !strings.Contains(err.Error(), "longer than") {
 		t.Errorf("a 1 MiB chunk of 4,096 bytes: %v", err)
+	}
+}
+
+// Download and Upload talk to the storage node under the client's timeout
+// (WithTimeout), not without one.
+func TestStorageNodeRequestsTimeOut(t *testing.T) {
+	data := []byte("willow")
+	manifest := fileManifest(data, DefaultChunkSize)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/files/sg/f":
+			_ = json.NewEncoder(w).Encode(manifest)
+		case r.URL.Path == "/tx/submit":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"tx_hash":"AB","code":0,"log":""}}`))
+		default: // the storage node's /chunk and /upload routes stall
+			_, _ = io.Copy(io.Discard, r.Body)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(3 * time.Second):
+				_, _ = w.Write(data)
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client, err := NewClient(srv.URL, WithTimeout(200*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func() error{
+		"Download": func() error { _, err := client.Files.Download("sg", "f", srv.URL); return err },
+		"Upload":   func() error { _, err := client.Files.Upload("sg", "f", "f.txt", data, srv.URL, nil); return err },
+	} {
+		start := time.Now()
+		err := call()
+		if took := time.Since(start); err == nil || took > 2*time.Second {
+			t.Errorf("%s from a stalled storage node: %v after %v; want a timeout", name, err, took)
+		}
 	}
 }
