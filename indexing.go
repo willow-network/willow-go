@@ -40,6 +40,10 @@ func (i *IndexingOperations) Query(ctx context.Context, subgroveID string, req *
 // false) and returns the answer as it comes, unverified. With an indexer URL
 // set (WithIndexerURL) the query goes to that indexer; otherwise to the API,
 // signed by the client's identity when one is set. req isn't changed.
+//
+// An indexer that doesn't serve the subgrove answers with empty data, not an
+// error; a DataStorage subgrove is served by the API alone. With an indexer
+// URL set, query one with GraphQLQueryWithSource and QuerySourceValidator.
 func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID string, req *GraphQLRequest) (*GraphQLResponse, error) {
 	if req == nil {
 		return nil, NewValidationError("QueryUnverified: no GraphQL request")

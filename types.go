@@ -46,13 +46,19 @@ type DidDocument struct {
 	Updated    int64       `json:"updated"`
 }
 
-// DidInfo contains information about a DID including its balance.
+// DidInfo is a DID and its on-chain document, as Client.GetDID reads them.
 type DidInfo struct {
-	Did       string       `json:"did"`
-	Document  *DidDocument `json:"document,omitempty"`
-	Balance   uint64       `json:"balance"`
-	Nonce     uint64       `json:"nonce"`
-	CreatedAt int64        `json:"created_at"`
+	Did      string       `json:"did"`
+	Document *DidDocument `json:"document,omitempty"`
+	// Balance is never set: GetDID reads only the document.
+	//
+	// Deprecated: read the balance with Token.GetBalance.
+	Balance uint64 `json:"balance"`
+	// Nonce is never set: GetDID reads only the document.
+	//
+	// Deprecated: read the nonce state with Client.GetAccountNonce.
+	Nonce     uint64 `json:"nonce"`
+	CreatedAt int64  `json:"created_at"`
 }
 
 // SchemaField defines a field in a schema.

@@ -389,7 +389,9 @@ func (f *FileOperations) MetadataContext(ctx context.Context, subgroveID, fileKe
 	return &manifest, nil
 }
 
-// List lists all files in a subgrove. Its request times out as Upload's do.
+// List returns the first page of a subgrove's files as the API answers it:
+// at most 50, by default. It doesn't read the pages after it. Its request
+// times out as Upload's do.
 func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 	return f.ListContext(context.Background(), subgroveID)
 }

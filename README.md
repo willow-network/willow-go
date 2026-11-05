@@ -533,7 +533,10 @@ err = client.Indexing.ExecuteWithResult(ctx, "uniswap-v3",
 
 `Execute`, `ExecuteWithResult`, and `QueryUnverified` ask for no proof and
 return the answer as the API (or, with `WithIndexerURL`, the indexer) sends
-it. `GraphQLQueryWithSource` asks for a proof only when the request sets
+it. An indexer that doesn't serve the subgrove answers with empty data, not
+an error, and only the API serves a DataStorage subgrove: with
+`WithIndexerURL` set, query one with `GraphQLQueryWithSource` and
+`willow.QuerySourceValidator`. `GraphQLQueryWithSource` asks for a proof only when the request sets
 `IncludeProof`, and returns it unverified, as the answer's JSON, in
 `GraphQLResponse.Proof`. `Indexing.Query` returns an unsupported error and
 sends nothing, because the SDK can't verify a GraphQL answer (see What the
@@ -628,7 +631,7 @@ consensusClient := consensus.NewClient(consensus.ClientConfig{
 // Broadcast transaction
 tx := consensus.TransferTx{
     FromDid: identity.DID(),
-    ToDid:   "did:willow:Ed25519:...",
+    ToDid:   recipient.DID(),
     Amount:  1000,
     // ... signature fields
 }
@@ -685,14 +688,6 @@ if err != nil {
 
 ## Configuration
 
-### Environment Variables
-
-The SDK respects these environment variables:
-
-- `WILLOW_API_URL`: Default API URL
-- `WILLOW_RPC_URL`: Default CometBFT RPC URL
-- `WILLOW_CHAIN_ID`: Default chain ID
-
 ### Retry Configuration
 
 ```go
@@ -739,9 +734,6 @@ go test ./...
 
 # Run tests with coverage
 go test -cover ./...
-
-# Run integration tests (requires running node)
-go test -tags=integration ./...
 ```
 
 ## License
