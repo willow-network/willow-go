@@ -25,9 +25,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // matchedLogJSON mirrors the indexer's served IndexedLog. Only the three
@@ -161,7 +162,7 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&rpcResp); err != nil {
 		return out, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if rpcResp.Error != nil {
@@ -238,7 +239,7 @@ func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockN
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, NewNetworkError("failed to read matched-logs response", err)
 	}

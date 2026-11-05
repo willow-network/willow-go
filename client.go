@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/willow-network/willow-go/internal/httpbody"
 	"github.com/willow-network/willow-go/lightclient"
 )
 
@@ -540,7 +541,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	defer resp.Body.Close()
 
 	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return NewNetworkError("failed to read response body", err)
 	}
@@ -636,7 +637,7 @@ func (c *Client) postTx(ctx context.Context, body []byte, did string, nonce uint
 		return "", nonceUnknown, NewNetworkError("transaction submission failed", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return "", nonceUnknown, NewNetworkError("failed to read /tx/submit response", err)
 	}

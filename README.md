@@ -54,6 +54,11 @@ their result directly. u128 amounts (balances, stakes, fees, supplies) arrive
 as JSON numbers beyond 64 bits and are read exactly: as `consensus.Uint128`,
 or as decimal strings in `TokenInfo` and `FeeSchedule`.
 
+The SDK reads at most 64 MiB of any one HTTP answer (from the API, the
+CometBFT RPC, an indexer, or a storage node), well above the largest real
+answer (a proof is a few MB), and refuses a longer one with an error that
+says it is over the 64 MiB limit.
+
 ## Signed transactions
 
 The kinds below are signed over a message of lines joined by `\n` (no

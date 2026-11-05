@@ -14,11 +14,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"math/big"
 	"net/http"
 	"strings"
 
+	"github.com/willow-network/willow-go/internal/httpbody"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -414,7 +414,7 @@ func (e *EthOperations) post(ctx context.Context, path string, body interface{})
 		return nil, err
 	}
 	defer resp.Body.Close()
-	rb, err := io.ReadAll(resp.Body)
+	rb, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}

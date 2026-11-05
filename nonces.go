@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // Transaction nonces.
@@ -467,7 +469,7 @@ func (c *Client) queryAccountNonceState(ctx context.Context, did string) (*Accou
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&answer); err != nil {
 		return nil, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if answer.Error != nil {

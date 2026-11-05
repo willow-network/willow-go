@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/willow-network/willow-go/consensus"
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // QuerySource tells the routing layer where to send a query. Whichever
@@ -150,7 +151,7 @@ func (d *Indexers) List(ctx context.Context) ([]IndexerInfo, error) {
 		Success bool          `json:"success"`
 		Data    []IndexerInfo `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&envelope); err != nil {
 		return nil, fmt.Errorf("decode /indexers response: %w", err)
 	}
 

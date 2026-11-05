@@ -7,11 +7,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // Client provides methods for interacting with the CometBFT consensus layer.
@@ -81,7 +82,7 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 	}
 	defer httpResp.Body.Close()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := httpbody.ReadAll(httpResp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -415,7 +416,7 @@ func (c *Client) doRPCRequest(ctx context.Context, req interface{}) (*RPCRespons
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

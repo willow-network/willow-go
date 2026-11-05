@@ -7,10 +7,11 @@ package erc8004
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"time"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // LinkEthAddressTx links an Ethereum address to a Willow DID.
@@ -195,7 +196,7 @@ func (c *Client) get(path string) (*apiResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

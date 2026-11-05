@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/willow-network/willow-go/consensus"
+	"github.com/willow-network/willow-go/internal/httpbody"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -221,7 +222,7 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 		if i == manifest.ChunkCount-1 {
 			want = manifest.TotalSize - uint64(i)*want
 		}
-		chunk, err := io.ReadAll(io.LimitReader(resp.Body, int64(want)+1))
+		chunk, err := httpbody.ReadAll(io.LimitReader(resp.Body, int64(want)+1))
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunk %d: %w", i, err)
@@ -266,7 +267,7 @@ func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, er
 	}
 
 	var manifest FileManifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -286,7 +287,7 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 
 	// The API answers {files, limit, start_after, has_more}, or {error} with
 	// a failure status, without the success/data envelope.
-	body, err := io.ReadAll(resp.Body)
+	body, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, NewNetworkError("failed to read /files response", err)
 	}

@@ -5,11 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // LightClient keeps a CometBFT header of the Willow chain that it trusts: one
@@ -533,7 +534,7 @@ func (lc *LightClient) rpcCall(ctx context.Context, endpoint, method string, par
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
