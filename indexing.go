@@ -107,7 +107,8 @@ func (i *IndexingOperations) Execute(ctx context.Context, subgroveID, query stri
 //     *NoIndexersReachableError if none are reachable.
 //   - QuerySourceAuto (default): indexer if one serves this subgrove, else
 //     validator. On indexer failure, falls back to validator with
-//     Fallback=true in the returned result.
+//     Fallback=true in the returned result, except when an indexer's answer
+//     was refused for its size (ErrAnswerTooLarge): that error is returned.
 //
 // It tries at most the three best-scored indexers serving the subgrove.
 func (i *IndexingOperations) GraphQLQueryWithSource(
@@ -158,7 +159,7 @@ func (i *IndexingOperations) SqlQueryWithSource(
 
 // maxIndexerCandidates is how many indexers a routed query tries, the best
 // scored first, before it fails (QuerySourceIndexer) or falls back to the API
-// (QuerySourceAuto).
+// (QuerySourceAuto; not after an answer refused for its size).
 const maxIndexerCandidates = 3
 
 // routeQuery is the shared routing helper used by both GraphQL and SQL
@@ -278,6 +279,7 @@ func routeQuery[T any](
 		candidates, _ := c.Indexers.ForSubgrove(ctx, subgroveID)
 		candidates = candidates[:min(len(candidates), maxIndexerCandidates)]
 		hadCandidates := len(candidates) > 0
+		var tooLarge error
 		for _, info := range candidates {
 			result, err := callIndexer(info)
 			if err == nil {
@@ -287,12 +289,16 @@ func routeQuery[T any](
 					IndexerDID: info.IndexerDID,
 				}, nil
 			}
-			// A size refusal is the answer: the API serves no indexed rows, so
-			// falling back would report none, with no error.
-			if errors.Is(err, ErrAnswerTooLarge) {
-				return nil, err
+			if tooLarge == nil && errors.Is(err, ErrAnswerTooLarge) {
+				tooLarge = err
 			}
 			// continue to next indexer / fall back to validator
+		}
+		// An indexer that answered with more than the SDK reads holds the
+		// rows; the API serves none of an indexing subgrove's, so its answer
+		// wouldn't be the query's. Ask for less.
+		if tooLarge != nil {
+			return nil, tooLarge
 		}
 		result, err := callValidator()
 		if err != nil {

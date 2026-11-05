@@ -64,14 +64,14 @@ length (a list of empty JSON objects decoded into maps). So the SDK also
 counts the JSON in an answer before decoding it, and refuses one that holds
 more than 2,097,152 units (each string, number, `true`, `false`, or `null`
 costs one, and each array or object eight) or nests deeper than 512 levels.
-Measured, an answer under that limit decodes to at most about 80 MiB besides
-the bytes of its strings. Numbers in a SQL or GraphQL answer's top-level proof
-don't count (an indexer sends a proof of every row, whose bytes are JSON numbers
-the SDK decodes into bytes or skips), nor do numbers in an `EthOperations` answer,
-which decodes into typed fields: those are bounded by the byte limit. A SQL
-answer of tens of thousands of rows with its proofs is within the limit. A
+Measured, an answer under that limit decodes to at most a few hundred MiB besides
+the bytes of its strings. A number in a byte array (one the SDK decodes into
+`[]byte` or `[]int`: the byte fields of a SQL answer's top-level proof, which an
+indexer sends for every row, and of an `EthOperations` answer) costs a sixteenth;
+every other number counts in full. A SQL answer with an indexer's proof of each row
+reaches the 64 MiB byte limit first, at about 9,000 rows with 2 KB proofs. A
 historical answer's data, bytes as JSON numbers decoded into `interface{}`, reaches
-it at about 2 MB of those bytes. The byte limits, by route, hold the largest answer
+the JSON limit at about 2 MB of those bytes. The byte limits, by route, hold the largest answer
 the node serves where the node bounds it:
 
 - 4 MiB: answers of fixed shape or short lists: nonces, balances, token
@@ -101,7 +101,7 @@ carries. Read one entry at a time instead of a list (`GetSubgrove`,
 refused for its size, past its byte limit or the JSON limit, is an error
 that matches `willow.ErrAnswerTooLarge` (`errors.Is`), in every package of
 the SDK. A routed query under `QuerySourceAuto` returns that error rather than
-falling back to the API, which serves no indexed rows.
+falling back to the API, which doesn't serve an indexing subgrove's rows.
 
 The HTTP clients the SDK makes time out after 30 s (`WithTimeout` sets the
 client's, which `Files` also uses with the storage node, and

@@ -100,7 +100,7 @@ func TestASQLBombIsRefusedBeforeItIsDecoded(t *testing.T) {
 // indexerSQLAnswer is a SQL answer of rows rows as an indexer serves it: one
 // proof per row, whose bytes are JSON number arrays the SDK doesn't keep.
 func indexerSQLAnswer(rows, proofBytes int) []byte {
-	numbers := strings.TrimSuffix(strings.Repeat("7,", proofBytes), ",")
+	numbers := strings.TrimSuffix(strings.Repeat("173,", proofBytes), ",")
 	var b bytes.Buffer
 	b.WriteString(`{"columns":["id","pool","amount"],"rows":[`)
 	for i := 0; i < rows; i++ {
@@ -124,7 +124,7 @@ func indexerSQLAnswer(rows, proofBytes int) []byte {
 // bytes are JSON numbers the SDK decodes into bytes or skips, so they don't
 // count against what it decodes. The rows themselves still do.
 func TestAnIndexersSQLAnswerWithItsPerRowProofsIsRead(t *testing.T) {
-	body := indexerSQLAnswer(5000, 2000)
+	body := indexerSQLAnswer(5000, 1000)
 	if len(body) >= httpbody.Large {
 		t.Fatalf("the answer is %d bytes, past the route's cap", len(body))
 	}
@@ -162,8 +162,21 @@ func TestNumbersInRowsAndNestedProofsStillCount(t *testing.T) {
 			t.Errorf("%s: %v; want it refused", name, err)
 		}
 	}
-	if err := httpbody.CheckJSONWithProof([]byte(`{"proof":[` + numbers + `]}`)); err != nil {
-		t.Errorf("a proof's numbers: %v", err)
+	if err := httpbody.CheckJSONWithProof([]byte(`{"proof":{"state_root":[` + numbers + `]}}`)); err != nil {
+		t.Errorf("a proof's byte array: %v", err)
+	}
+	// Numbers anywhere else in a proof count: decoded into a slice of structs,
+	// each takes a whole struct even when it fails to decode.
+	for name, body := range map[string]string{
+		"proof array":       `{"proof":[` + numbers + `]}`,
+		"merkle_proofs":     `{"proof":{"merkle_proofs":[` + numbers + `]}}`,
+		"siblings":          `{"proof":{"merkle_proofs":[{"siblings":[` + numbers + `]}]}}`,
+		"another spelling":  `{"proof":{"STATE_ROOT":[` + numbers + `]}}`,
+		"byte key in a row": `{"rows":[[{"state_root":[` + numbers + `]}]]}`,
+	} {
+		if err := httpbody.CheckJSONWithProof([]byte(body)); !errors.Is(err, ErrAnswerTooLarge) {
+			t.Errorf("%s: %v; want it refused", name, err)
+		}
 	}
 	var containers strings.Builder
 	containers.WriteString(`{"proof":{"merkle_proofs":[`)
@@ -176,8 +189,8 @@ func TestNumbersInRowsAndNestedProofsStillCount(t *testing.T) {
 	}
 }
 
-// Under Auto a size refusal is the answer: the API serves no indexed rows, so
-// falling back would report none, with no error.
+// Under Auto a size refusal is the answer: the API doesn't serve an indexing
+// subgrove's rows, so falling back wouldn't give the query's answer.
 func TestAutoReturnsAnIndexersSizeRefusalRatherThanFallingBack(t *testing.T) {
 	var b bytes.Buffer
 	b.WriteString(`{"columns":[],"rows":[[`)
@@ -230,5 +243,25 @@ func TestAnEthereumAnswerOfManyProofBytesIsRead(t *testing.T) {
 	}
 	if len(env.StateRoot) != httpbody.MaxValues+1 {
 		t.Fatalf("state root of %d", len(env.StateRoot))
+	}
+}
+
+// Only an Ethereum answer's byte arrays are cheap: numbers where it holds
+// structs (its proofs) count in full.
+func TestAnEthereumAnswerOfNumbersWhereItHoldsStructsIsRefused(t *testing.T) {
+	numbers := strings.TrimSuffix(strings.Repeat("0,", httpbody.MaxValues+1), ",")
+	for _, body := range []string{
+		`{"state_proofs":[` + numbers + `]}`,
+		`{"state_proofs":[{"storage_proofs":[` + numbers + `]}]}`,
+		`{"state_proofs":[{"account_proof":{"proof_nodes":[` + numbers + `]}}]}`,
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(body))
+		}))
+		eth := NewEthOperations(srv.URL, nil)
+		if _, err := eth.post(context.Background(), "/x", map[string]string{}); !errors.Is(err, ErrAnswerTooLarge) {
+			t.Errorf("%.40s…: %v; want it refused", body, err)
+		}
+		srv.Close()
 	}
 }

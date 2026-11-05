@@ -383,7 +383,10 @@ type GraphQLLocation struct {
 type GraphQLResponse struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 	Errors []GraphQLError  `json:"errors,omitempty"`
-	Proof  json.RawMessage `json:"proof,omitempty"`
+	// Proof is the answer's proof object as served, unverified and undecoded;
+	// an indexer's can be tens of MiB of JSON numbers, so decode it into typed
+	// fields, not interface{}.
+	Proof json.RawMessage `json:"proof,omitempty"`
 }
 
 // UnmarshalJSON reads a GraphQL answer, leaving Proof nil when the answer's

@@ -446,7 +446,7 @@ func (e *EthOperations) post(ctx context.Context, path string, body interface{})
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, string(rb))
 	}
 	var env wireEnvelope
-	if err := httpbody.UnmarshalTyped(rb, &env); err != nil {
+	if err := httpbody.UnmarshalEthereum(rb, &env); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
 	return &env, nil

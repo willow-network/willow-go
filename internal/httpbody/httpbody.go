@@ -10,9 +10,9 @@
 // true, false, or null costing one and each array or object ContainerCost,
 // nested at most MaxDepth deep. Measured, JSON decoded into interface{}
 // values, maps, or the SDK's types keeps at most about 40 bytes per unit
-// besides the bytes of its strings (decoding allocates up to about three
-// times that on the way), so an answer under the limit decodes to at most
-// about 80 MiB besides them.
+// besides the bytes of its strings, and a list of structs a few hundred bytes
+// per element (decoding allocates up to about three times that on the way), so
+// an answer under the limit decodes to at most a few hundred MiB besides them.
 //
 // A cap holds the largest answer the node serves on a route where the node
 // bounds it. Some answers have no bound on the node: the lists that aren't
@@ -121,11 +121,12 @@ const (
 	// MaxValues is the most JSON the SDK decodes of one answer, in units:
 	// each string, number, true, false, or null costs one, and each array or
 	// object ContainerCost. An honest answer holds fewer: a page of 100
-	// documents of 10 fields is under 3,000, and a SQL answer of tens of
-	// thousands of rows, with an indexer's proof of each, under the limit
-	// (the numbers in those proofs don't count: see CheckJSONWithProof). An
-	// answer that carries its bytes as JSON numbers decoded into interface{}
-	// (a historical answer's data) reaches it at about 2 MB of those bytes.
+	// documents of 10 fields is under 3,000, and a SQL answer with an
+	// indexer's proof of each row reaches the 64 MiB byte cap first (about
+	// 9,000 rows with 2 KB proofs), since a number in a proof's byte arrays
+	// costs a sixteenth (see CheckJSONWithProof). An answer that carries its
+	// bytes as JSON numbers decoded into interface{} (a historical answer's
+	// data) reaches it at about 2 MB of those bytes.
 	MaxValues = 1 << 21
 	// ContainerCost is what an array or object costs: decoded, one takes
 	// several times what a number or a short string takes (a map, about 340
@@ -162,41 +163,46 @@ func (e *TooMuchJSONError) Is(target error) bool {
 // reads data once and allocates nothing. It doesn't validate data: JSON that
 // isn't valid passes, and the decoder refuses it.
 func CheckJSON(data []byte) error {
-	return scanJSON(data, MaxValues, MaxDepth, everyNumber)
+	return scanJSON(data, MaxValues, MaxDepth, nil, false)
 }
 
-// CheckJSONWithProof is CheckJSON for an answer the SDK decodes into a type
-// whose top-level "proof" holds bytes, not interface{} values (a SQL or GraphQL
-// answer, which an indexer sends with a proof of every row): a number under
-// that proof costs nothing, since decoded it takes at most a byte, or nothing
-// when the SDK skips the field. Its strings and containers still count, as
-// does every number elsewhere.
+// CheckJSONWithProof is CheckJSON for a SQL or GraphQL answer, which an indexer
+// sends with a proof of every row: a number directly in one of the byte arrays
+// of its top-level "proof" (see sqlProofBytes), which the SDK decodes into
+// []byte or skips, costs a sixteenth of a unit. Every other number, string,
+// and container counts in full, so a slice of structs (whose elements Go's
+// decoder allocates even when they fail to decode) is bounded as before.
 func CheckJSONWithProof(data []byte) error {
-	return scanJSON(data, MaxValues, MaxDepth, notUnderProof)
+	return scanJSON(data, MaxValues, MaxDepth, sqlProofBytes, true)
 }
 
 // checkJSON is CheckJSON at the given limits.
 func checkJSON(data []byte, maxValues, maxDepth int) error {
-	return scanJSON(data, maxValues, maxDepth, everyNumber)
+	return scanJSON(data, maxValues, maxDepth, nil, false)
 }
 
-// numberCost says which numbers in an answer cost a unit.
-type numberCost int
+// byteArrays names the keys whose values are byte arrays, JSON arrays of
+// numbers, that the SDK decodes into []byte or []int (or skips): 1 for an array
+// of numbers, 2 for an array of such arrays. Keys match exactly, as written.
+type byteArrays map[string]int
 
-const (
-	// everyNumber: the answer may be decoded into interface{} values, where
-	// a number takes tens of bytes.
-	everyNumber numberCost = iota
-	// notUnderProof: see CheckJSONWithProof.
-	notUnderProof
-	// noNumber: the answer is decoded into typed fields only, where a number
-	// takes at most 8 bytes, so the route's byte cap bounds them. See
-	// UnmarshalTyped.
-	noNumber
-)
+// sqlProofBytes are the byte arrays of a SQL answer's proof.
+var sqlProofBytes = byteArrays{"value_hash": 1, "merkle_proof": 1, "state_root": 1, "tx_hash": 1}
 
-func scanJSON(data []byte, maxValues, maxDepth int, numbers numberCost) error {
+// ethBytes are the byte arrays of an indexer's Ethereum state answer.
+var ethBytes = byteArrays{
+	"address": 1, "block_hash": 1, "state_root": 1, "balance": 1, "storage_hash": 1,
+	"code_hash": 1, "key": 1, "value": 1, "slot": 1, "proof_nodes": 2,
+}
+
+// freeNumbersPerUnit is how many numbers in a byte array cost one unit: decoded,
+// each takes at most 8 bytes (an int), and a whole byte array one allocation.
+const freeNumbersPerUnit = 16
+
+func scanJSON(data []byte, maxValues, maxDepth int, free byteArrays, onlyUnderProof bool) error {
 	units, depth := 0, 0
+	freeNumbers := 0
+	freeAt, freeBase := -1, -1 // the depth whose numbers are free, and its key's depth
 	underProof := false
 	for i := 0; i < len(data); i++ {
 		switch c := data[i]; {
@@ -208,8 +214,14 @@ func scanJSON(data []byte, maxValues, maxDepth int, numbers numberCost) error {
 					i++
 				}
 			}
-			if numbers == notUnderProof && depth == 1 && i <= len(data) && string(data[start:min(i, len(data))]) == "proof" {
-				underProof = opensContainerAfterColon(data, i+1)
+			if free == nil || freeAt >= 0 || i >= len(data) || !opensContainerAfterColon(data, i+1, '[', '{') {
+				break
+			}
+			key := string(data[start:i])
+			if onlyUnderProof && depth == 1 && key == "proof" {
+				underProof = true
+			} else if nesting := free[key]; nesting > 0 && (underProof || !onlyUnderProof) && opensContainerAfterColon(data, i+1, '[') {
+				freeBase, freeAt = depth, depth+nesting
 			}
 		case c == '[' || c == '{':
 			units += ContainerCost
@@ -217,11 +229,19 @@ func scanJSON(data []byte, maxValues, maxDepth int, numbers numberCost) error {
 				return &TooMuchJSONError{Depth: true}
 			}
 		case c == ']' || c == '}':
-			if depth--; depth <= 1 {
+			depth--
+			if depth <= freeBase {
+				freeAt, freeBase = -1, -1
+			}
+			if depth <= 1 {
 				underProof = false
 			}
 		case c == '-' || c >= '0' && c <= '9':
-			if numbers == everyNumber || numbers == notUnderProof && !underProof {
+			if depth == freeAt {
+				if freeNumbers++; freeNumbers == freeNumbersPerUnit {
+					units, freeNumbers = units+1, 0
+				}
+			} else {
 				units++
 			}
 			for i+1 < len(data) && isScalarByte(data[i+1]) {
@@ -241,9 +261,9 @@ func scanJSON(data []byte, maxValues, maxDepth int, numbers numberCost) error {
 	return nil
 }
 
-// opensContainerAfterColon reports whether data at i is a colon and then an
-// array or object, whitespace aside: a key whose value is a container.
-func opensContainerAfterColon(data []byte, i int) bool {
+// opensContainerAfterColon reports whether data at i is a colon and then one
+// of opens, whitespace aside: a key whose value is that kind of container.
+func opensContainerAfterColon(data []byte, i int, opens ...byte) bool {
 	skip := func() {
 		for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
 			i++
@@ -255,7 +275,15 @@ func opensContainerAfterColon(data []byte, i int) bool {
 	}
 	i++
 	skip()
-	return i < len(data) && (data[i] == '[' || data[i] == '{')
+	if i >= len(data) {
+		return false
+	}
+	for _, o := range opens {
+		if data[i] == o {
+			return true
+		}
+	}
+	return false
 }
 
 func isScalarByte(c byte) bool {
@@ -271,11 +299,11 @@ func Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }
 
-// UnmarshalTyped decodes data into v, whose types hold no interface{} values,
-// so that a number takes at most 8 bytes: numbers don't count against what the
-// SDK decodes (see CheckJSON), and the route's byte cap bounds them.
-func UnmarshalTyped(data []byte, v any) error {
-	if err := scanJSON(data, MaxValues, MaxDepth, noNumber); err != nil {
+// UnmarshalEthereum decodes an indexer's Ethereum state answer into v: a number
+// directly in one of its byte arrays (see ethBytes), which the SDK decodes into
+// []int, costs a sixteenth of a unit (see CheckJSON).
+func UnmarshalEthereum(data []byte, v any) error {
+	if err := scanJSON(data, MaxValues, MaxDepth, ethBytes, false); err != nil {
 		return err
 	}
 	return json.Unmarshal(data, v)
