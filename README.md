@@ -146,8 +146,10 @@ nonces with no gap below them: a write that landed above a nonce not yet used
 (a write still pending, or one that never landed) doesn't show as landed, so
 `WaitUntilLanded` waits for every earlier nonce and fails at the context's
 deadline if one never lands. The client may also hand that write's nonce out
-again once its 120 s hold lapses, and a write refused for it then fails with
-`willow.ErrNonceUsed` (see below).
+again once its 120 s hold lapses. A write then refused as used under it is
+signed again under the next free nonce, unless this client sent the same
+write (the same transaction but for its nonce and signature) under that
+nonce before: that one fails with `willow.ErrNonceUsed` (see below).
 
 ```go
 client, err := willow.NewClient("http://localhost:3031",
