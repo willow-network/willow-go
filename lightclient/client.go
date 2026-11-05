@@ -94,7 +94,7 @@ func (lc *LightClient) InitializeWithTrustOnFirstUse(ctx context.Context) error 
 	}
 
 	if block == nil {
-		return fmt.Errorf("could not fetch latest block from validators for trust-on-first-use initialization: %v", lastErr)
+		return fmt.Errorf("could not fetch latest block from validators for trust-on-first-use initialization: %w", lastErr)
 	}
 
 	// Trust this header as our initial state
@@ -232,7 +232,7 @@ func (lc *LightClient) SyncToLatest(ctx context.Context) error {
 		return nil
 	}
 
-	return fmt.Errorf("failed to sync from any validator: %v", lastErr)
+	return fmt.Errorf("failed to sync from any validator: %w", lastErr)
 }
 
 // VerifyHeader checks an untrusted header against the trusted state: its chain

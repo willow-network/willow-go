@@ -3,6 +3,7 @@ package willow
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
@@ -41,8 +42,8 @@ func TestAnswersPastTheValueLimitAreRefused(t *testing.T) {
 	at := arraysOf(testValueLimit/testContainerCost - 1)
 	for _, route := range answerRoutes(t, srv.URL) {
 		srv.body.Store(&over)
-		if err := route.call(); err == nil || !strings.Contains(err.Error(), "than the SDK decodes") {
-			t.Errorf("%s, past the value limit: %v; want a refusal", route.name, err)
+		if err := route.call(); !errors.Is(err, ErrAnswerTooLarge) || !strings.Contains(err.Error(), "than the SDK decodes") {
+			t.Errorf("%s, past the value limit: %v; want a refusal, ErrAnswerTooLarge", route.name, err)
 		}
 		srv.body.Store(&at)
 		if err := route.call(); err != nil && strings.Contains(err.Error(), "than the SDK decodes") {

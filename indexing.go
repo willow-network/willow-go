@@ -249,7 +249,8 @@ func routeQuery[T any](
 				Details:    "no indexer in the registry serves this subgrove",
 			}
 		}
-		var errs []string
+		var details []string
+		var errs []error
 		for _, info := range candidates {
 			result, err := callIndexer(info)
 			if err == nil {
@@ -259,11 +260,13 @@ func routeQuery[T any](
 					IndexerDID: info.IndexerDID,
 				}, nil
 			}
-			errs = append(errs, fmt.Sprintf("%s: %v", info.IndexerDID, err))
+			details = append(details, fmt.Sprintf("%s: %v", info.IndexerDID, err))
+			errs = append(errs, err)
 		}
 		return nil, &NoIndexersReachableError{
 			SubgroveID: subgroveID,
-			Details:    strings.Join(errs, "; "),
+			Details:    strings.Join(details, "; "),
+			Errs:       errs,
 		}
 
 	default: // QuerySourceAuto

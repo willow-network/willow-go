@@ -3,6 +3,7 @@ package willow
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,8 +62,8 @@ func TestAnswersAreReadUpToTheirRoutesCap(t *testing.T) {
 	for _, route := range answerRoutes(t, srv.URL) {
 		limit := fmt.Sprintf("%d MiB", route.mib)
 		srv.pad.Store(route.mib<<20 + 1)
-		if err := route.call(); err == nil || !strings.Contains(err.Error(), limit+" limit") {
-			t.Errorf("%s, one byte over %s: %v; want a refusal past %s", route.name, limit, err, limit)
+		if err := route.call(); !errors.Is(err, ErrAnswerTooLarge) || !strings.Contains(err.Error(), limit+" limit") {
+			t.Errorf("%s, one byte over %s: %v; want a refusal past %s, ErrAnswerTooLarge", route.name, limit, err, limit)
 		}
 		srv.pad.Store(route.mib<<20 - 3)
 		if err := route.call(); err != nil && strings.Contains(err.Error(), "MiB limit") {

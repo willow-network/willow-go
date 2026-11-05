@@ -87,6 +87,16 @@ hold the largest answer the node serves where the node bounds it:
   `FetchMatchedLogs`, and `EthOperations`. Ask for less (a lower `Limit`,
   fewer slots) when an answer would be over it.
 
+Some answers have no bound on the node and grow with the chain: the lists
+the API doesn't page (subgroves, validators, indexers, a subgrove's key
+grants, a DID's permissions) and DID documents can outgrow their limit, and
+an Ethereum call (`GetCall`) can touch more state than 64 MiB of proofs
+carries. Read one entry at a time instead of a list (`GetSubgrove`,
+`GetIndexer`, `Validators.Get`), and make a call touch less. An answer
+refused for its size, past its byte limit or the JSON limit, is an error
+that matches `willow.ErrAnswerTooLarge` (`errors.Is`), in every package of
+the SDK.
+
 The HTTP clients the SDK makes time out after 30 s (`WithTimeout` sets the
 client's, which `Files` also uses with the storage node, and
 `consensus.ClientConfig.Timeout` the consensus client's), and the light

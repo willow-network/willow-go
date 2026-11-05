@@ -222,12 +222,19 @@ func (e *ValidatorHasNoDataError) Error() string {
 
 // NoIndexersReachableError is returned when QuerySourceIndexer was
 // requested but either no indexer serves the subgrove or every candidate
-// failed.
+// failed. Errs holds each candidate's error, in the order they were tried;
+// errors.Is and errors.As look through them.
 type NoIndexersReachableError struct {
 	SubgroveID string
 	Details    string
+	Errs       []error
 }
 
 func (e *NoIndexersReachableError) Error() string {
 	return fmt.Sprintf("no indexer could serve subgrove %q: %s", e.SubgroveID, e.Details)
+}
+
+// Unwrap returns Errs.
+func (e *NoIndexersReachableError) Unwrap() []error {
+	return e.Errs
 }

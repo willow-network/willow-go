@@ -3,6 +3,8 @@ package willow
 import (
 	"errors"
 	"fmt"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // Error types for the Willow SDK.
@@ -18,6 +20,13 @@ var (
 
 	// ErrLightClientNotInitialized is returned when light client operations are attempted without initialization.
 	ErrLightClientNotInitialized = errors.New("light client not initialized")
+
+	// ErrAnswerTooLarge is the cause of the error for an HTTP answer the SDK
+	// refuses for its size (errors.Is(err, ErrAnswerTooLarge)): longer than
+	// its route's limit, or holding more JSON than the SDK decodes. The
+	// consensus, lightclient, and erc8004 packages' errors match it too.
+	// Ask for less where the request sets an answer's size.
+	ErrAnswerTooLarge = httpbody.ErrTooLarge
 )
 
 // WillowError represents an error from the Willow SDK.
