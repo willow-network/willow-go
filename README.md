@@ -132,6 +132,10 @@ nonce. (RevokeSubgroveKey and DeregisterSubgrove sign
 | RotateSubgroveKey | `FormatRotateSubgroveKeyMessage` | `Subgrove`, `Sender`, `NewEpoch`, `Grants` (the count), each grant's seven lines in order, `Nonce` |
 | UnregisterStorageNode | `FormatUnregisterStorageNodeMessage` | `Node`, `Nonce` |
 
+The chain accepts these forms from its activation height; until then it
+refuses them, including GrantSubgroveKey and RotateSubgroveKey, which the
+older forms signed.
+
 A RegisterSubgrove's `Config` is the hex SHA-256 of the registration's
 bincode (bincode 1.x: fixed-width little-endian integers, u64 lengths) with
 an empty signature, so it binds every field: `consensus.RegisterSubgroveUnsignedBincode`
