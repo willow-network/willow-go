@@ -13,8 +13,9 @@ type RegistrationOperations struct {
 }
 
 // RegisterSubgrove registers a DataStorage subgrove owned by the client's
-// identity, by sending a signed RegisterSubgrove transaction to POST
-// /tx/submit.
+// identity, by sending a signed consensus.RegisterSubgroveTx, tx, to POST
+// /tx/submit in the body {"RegisterSubgrove": tx}, the form /tx/submit takes
+// a transaction in.
 //
 // The transaction carries req's SubgroveID, Name, and Description, its Schema
 // in the chain's form (SchemaDefinition.ChainSchemaJSON), and a DataStorage
@@ -24,7 +25,8 @@ type RegistrationOperations struct {
 // FormatRegisterSubgroveMessage, which binds all of them and the nonce (see
 // Client.NextNonce). For another mode or those fields, build a
 // consensus.RegisterSubgroveTx, sign FormatRegisterSubgroveMessage, and send it
-// with consensus.Client.BroadcastTxSync.
+// in the same body with consensus.Client.BroadcastTxSync:
+// BroadcastTxSync(ctx, map[string]interface{}{"RegisterSubgrove": tx}).
 //
 // OwnerDid, when set, must be the identity's DID, and RewardRate must be 0: a
 // DataStorage registration has no reward rate. SubgroveID must be 1 to 64
