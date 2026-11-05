@@ -238,10 +238,13 @@ func (lc *LightClient) SyncToLatest(ctx context.Context) error {
 // VerifyHeader checks an untrusted header against the trusted state: its chain
 // id, a height and time after the trusted header's, the trusting period, clock
 // drift, an adjacent header's validator-set hash, and that the validators its
-// commit lists as signing hold the trust threshold of voting power.
+// commit lists as signing hold the trust threshold of the voting power of the
+// validator set the untrusted block itself carries.
 //
-// It doesn't verify the commit's signatures: Verified in the result means
-// these checks passed, not that the validators signed the header.
+// It verifies no signature, and doesn't tie that validator set to the
+// header's validators hash or to the trusted validators, so a header anyone
+// can build passes: ChecksPassed in the result means these checks passed, not
+// that the validators signed the header.
 func (lc *LightClient) VerifyHeader(ctx context.Context, untrusted LightBlock) (*VerificationResult, error) {
 	lc.stateMu.RLock()
 	trusted := lc.trustedState
@@ -307,6 +310,7 @@ func (lc *LightClient) VerifyHeader(ctx context.Context, untrusted LightBlock) (
 		return result, nil
 	}
 
+	result.ChecksPassed = true
 	result.Verified = true
 	result.AppHash = untrusted.Header.AppHash
 	return result, nil
@@ -346,7 +350,7 @@ func (lc *LightClient) verifyAndUpdateHeader(ctx context.Context, block *LightBl
 	if err != nil {
 		return err
 	}
-	if !result.Verified {
+	if !result.ChecksPassed {
 		return fmt.Errorf("header verification failed: %s", result.Error)
 	}
 
