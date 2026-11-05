@@ -28,6 +28,32 @@ func TestReadAllStopsAtMaxBytes(t *testing.T) {
 	}
 }
 
+// A read that passes the cap returns the bytes up to it, and every read after
+// returns none (never a negative count) with ErrTooLarge.
+func TestReadsPastTheCapReturnNoBytes(t *testing.T) {
+	r := Reader(zeros{})
+	buf := make([]byte, 3<<20) // MaxBytes isn't a multiple of it
+	var total int
+	for {
+		n, err := r.Read(buf)
+		if n < 0 || n > len(buf) {
+			t.Fatalf("a read returned %d bytes", n)
+		}
+		total += n
+		if err != nil {
+			if !errors.Is(err, ErrTooLarge) || total != MaxBytes {
+				t.Fatalf("after %d bytes: %v", total, err)
+			}
+			break
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if n, err := r.Read(buf); n != 0 || !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("read %d past the cap: %d bytes, %v; want 0, ErrTooLarge", i+1, n, err)
+		}
+	}
+}
+
 // zeros reads as an endless run of zero bytes.
 type zeros struct{}
 

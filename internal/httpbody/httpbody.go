@@ -29,11 +29,13 @@ type capped struct {
 	read int64
 }
 
+// Read returns the bytes up to MaxBytes, and ErrTooLarge once the answer
+// passes it; a read after that returns no bytes and ErrTooLarge again.
 func (c *capped) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.read += int64(n)
 	if over := c.read - MaxBytes; over > 0 {
-		return n - int(over), ErrTooLarge
+		return max(n-int(over), 0), ErrTooLarge
 	}
 	return n, err
 }
