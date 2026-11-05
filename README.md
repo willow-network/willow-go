@@ -18,7 +18,9 @@ go get github.com/willow-network/willow-go
 - **File Storage**: Upload, download, list, and delete files with chunk Merkle verification
 - **File Encryption**: XChaCha20-Poly1305 encryption/decryption for private files
 - **Light Client**: Track a trusted CometBFT header (see Proofs and the light client)
-- **GroveDB Proofs**: Decode GroveDB proofs and check their envelope
+- **GroveDB Proofs**: Decode GroveDB proofs and check their envelope (the
+  `grovedb` package doesn't verify a proof: its hashing isn't grovedb's, and
+  its verify functions are deprecated)
 
 ## Transaction submission
 

@@ -1,3 +1,17 @@
+// Package grovedb decodes GroveDB proofs (the bincode envelope and its Merk
+// operations) and checks the envelope's shape (CheckEnvelope).
+//
+// It doesn't verify a proof. Its hashing is SHA-256 with no length prefixes,
+// not grovedb 3.1.0's BLAKE3 over varint-length-prefixed fields, so the root
+// it computes is never a chain's root. Its walk of a proof is also unsound: it
+// ignores the children attached under a Hash node, never checks a
+// KVValueHash node's value against its value hash, ignores the value a
+// KVRefValueHash node refers to, and doesn't check that keys are in order.
+// The functions that verify (VerifyProof, VerifyProofAtPath,
+// VerifyProofAgainstRoot, VerifyProofAgainstRootAtPath, QuickVerify,
+// Verifier.Verify, and ExecuteMerkProof's root hash) are deprecated: a
+// result from them, valid or not, says nothing about a Willow proof, and
+// must not be relied on.
 package grovedb
 
 import (
@@ -54,7 +68,12 @@ func (t *Tree) Height() int {
 	return rightH + 1
 }
 
-// Hash computes the hash of this tree node.
+// Hash computes the hash of this tree node, with SHA-256, not grovedb's
+// BLAKE3, and without the hashes of children under a Hash node.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func (t *Tree) Hash() CryptoHash {
 	if t.node == nil {
 		return NullHash
@@ -395,7 +414,13 @@ type MerkExecutionResult struct {
 	ResultSet []ProvedKeyValue
 }
 
-// ExecuteMerkProof executes a Merk proof and returns the result.
+// ExecuteMerkProof executes a Merk proof's operations and returns the
+// key-value pairs it pushes and a root hash computed with SHA-256, not
+// grovedb's BLAKE3: never a chain's root.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func ExecuteMerkProof(proofBytes []byte) (*MerkExecutionResult, error) {
 	decoder := NewMerkDecoder(proofBytes)
 	stack := make([]*Tree, 0)
@@ -665,9 +690,13 @@ func CheckEnvelope(proof *GroveDBProof, expectedPath [][]byte) error {
 	return nil
 }
 
-// VerifyProofAtPath verifies a proof and requires that it descends to
-// `expectedPath` (see CheckEnvelope). Use it whenever the query path is
-// known; a result set that is empty at this path is then a proven absence.
+// VerifyProofAtPath decodes a proof, requires that it descends to
+// `expectedPath` (see CheckEnvelope), and walks it as VerifyProof does. It
+// doesn't verify the proof.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func VerifyProofAtPath(proofBytes []byte, expectedPath [][]byte) (*VerificationResult, error) {
 	proof, err := DecodeGroveDBProof(proofBytes)
 	if err != nil {
@@ -679,7 +708,12 @@ func VerifyProofAtPath(proofBytes []byte, expectedPath [][]byte) (*VerificationR
 	return verifyDecoded(proof)
 }
 
-// VerifyProofAgainstRootAtPath is VerifyProofAtPath plus the root compare.
+// VerifyProofAgainstRootAtPath is VerifyProofAtPath plus a compare of the
+// root it computes, which is never a chain's root, with expectedRootHash.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func VerifyProofAgainstRootAtPath(proofBytes []byte, expectedPath [][]byte, expectedRootHash string) (*VerificationResult, error) {
 	result, err := VerifyProofAtPath(proofBytes, expectedPath)
 	if err != nil {
@@ -705,7 +739,13 @@ func verifyDecoded(proof *GroveDBProof) (*VerificationResult, error) {
 	}, nil
 }
 
-// VerifyProof verifies a GroveDB proof and returns the verification result.
+// VerifyProof decodes a GroveDB proof and walks it, returning the values it
+// carries and a root computed with SHA-256, not grovedb's BLAKE3. It doesn't
+// verify the proof: a nil error says nothing about it.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func VerifyProof(proofBytes []byte) (*VerificationResult, error) {
 	proof, err := DecodeGroveDBProof(proofBytes)
 	if err != nil {
@@ -759,7 +799,12 @@ func verifyLayerProof(layer *LayerProof, currentPath [][]byte, results *[]QueryR
 	return merkResult.RootHash, nil
 }
 
-// VerifyProofAgainstRoot verifies a proof against an expected root hash.
+// VerifyProofAgainstRoot is VerifyProof plus a compare of the root it
+// computes, which is never a chain's root, with expectedRootHash.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func VerifyProofAgainstRoot(proofBytes []byte, expectedRootHash string) (*VerificationResult, error) {
 	result, err := VerifyProof(proofBytes)
 	if err != nil {
@@ -775,7 +820,12 @@ func VerifyProofAgainstRoot(proofBytes []byte, expectedRootHash string) (*Verifi
 	return result, nil
 }
 
-// QuickVerify quickly verifies a proof and returns just the root hash.
+// QuickVerify returns the root VerifyProof computes, which is never a
+// chain's root.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func QuickVerify(proofBytes []byte) (CryptoHash, error) {
 	result, err := VerifyProof(proofBytes)
 	if err != nil {
@@ -784,12 +834,21 @@ func QuickVerify(proofBytes []byte) (CryptoHash, error) {
 	return HashFromHex(result.RootHash)
 }
 
-// Verifier provides stateful proof verification.
+// Verifier compares the root VerifyProof computes with a root it is given.
+// It doesn't verify a proof.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 type Verifier struct {
 	trustedRootHash string
 }
 
-// NewVerifier creates a new verifier.
+// NewVerifier creates a Verifier.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func NewVerifier() *Verifier {
 	return &Verifier{}
 }
@@ -808,7 +867,12 @@ func (v *Verifier) SetTrustedRoot(rootHash string) error {
 	return nil
 }
 
-// Verify verifies a proof against the trusted root.
+// Verify is VerifyProofAgainstRoot with the root SetTrustedRoot set. It
+// doesn't verify the proof.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func (v *Verifier) Verify(proofBytes []byte) (*VerificationResult, error) {
 	if v.trustedRootHash == "" {
 		return nil, NewVerificationError("no trusted root hash set")

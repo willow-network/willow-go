@@ -54,18 +54,31 @@ func HashFromHex(s string) (CryptoHash, error) {
 	return HashFromBytes(b), nil
 }
 
-// ComputeHash computes the SHA256 hash of data.
+// ComputeHash computes the SHA-256 hash of data. grovedb hashes with BLAKE3.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func ComputeHash(data []byte) CryptoHash {
 	return sha256.Sum256(data)
 }
 
-// ValueHash computes the hash of a value (for Merk tree).
+// ValueHash is the SHA-256 of value. grovedb's value hash is the BLAKE3 of
+// value's varint length and value.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func ValueHash(value []byte) CryptoHash {
 	return ComputeHash(value)
 }
 
-// ComputeNodeHash computes the hash of a Merk tree node.
-// node_hash = H(kv_hash || left_hash || right_hash)
+// ComputeNodeHash is the SHA-256 of kv_hash || left_hash || right_hash.
+// grovedb's node hash is their BLAKE3.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func ComputeNodeHash(kvHash, leftHash, rightHash CryptoHash) CryptoHash {
 	combined := make([]byte, HashLength*3)
 	copy(combined[0:HashLength], kvHash[:])
@@ -74,8 +87,12 @@ func ComputeNodeHash(kvHash, leftHash, rightHash CryptoHash) CryptoHash {
 	return ComputeHash(combined)
 }
 
-// KVHash computes the key-value hash for a Merk tree node.
-// kv_hash = H(key || value_hash)
+// KVHash is the SHA-256 of key || ValueHash(value). grovedb's kv hash is the
+// BLAKE3 of key's varint length, key, and its value hash.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func KVHash(key, value []byte) CryptoHash {
 	valueH := ValueHash(value)
 	combined := make([]byte, len(key)+HashLength)
@@ -84,8 +101,12 @@ func KVHash(key, value []byte) CryptoHash {
 	return ComputeHash(combined)
 }
 
-// CombineHash combines two hashes using SHA256.
-// Used for combining value_hash with subtree root hash.
+// CombineHash is the SHA-256 of left || right. grovedb combines a value hash
+// with a subtree's root hash with BLAKE3.
+//
+// Deprecated: this package doesn't verify a Willow proof (see the package
+// doc): its hashing isn't grovedb's, so it never reproduces a chain root.
+// Don't rely on it; no function in this SDK verifies a GroveDB proof.
 func CombineHash(left, right CryptoHash) CryptoHash {
 	combined := make([]byte, HashLength*2)
 	copy(combined[:HashLength], left[:])
