@@ -100,7 +100,7 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 		} `json:"data"`
 		Error *string `json:"error"`
 	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
+	if err := httpbody.Unmarshal(respBody, &envelope); err != nil {
 		return nil, fmt.Errorf("failed to parse /tx/submit response: %w", err)
 	}
 
@@ -433,7 +433,7 @@ func (c *Client) doRPCRequest(ctx context.Context, req interface{}, limit int64)
 	}
 
 	var rpcResp RPCResponse
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if err := httpbody.Unmarshal(respBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

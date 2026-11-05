@@ -318,7 +318,7 @@ func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, er
 	}
 
 	var manifest FileManifest
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&manifest); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -346,7 +346,7 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 		return nil, f.client.handleErrorResponse(resp.StatusCode, body)
 	}
 	var result FileListResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := httpbody.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 	return result.Files, nil

@@ -554,7 +554,7 @@ func (lc *LightClient) rpcCall(ctx context.Context, endpoint, method string, par
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if err := httpbody.Unmarshal(respBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

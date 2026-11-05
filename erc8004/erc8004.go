@@ -202,7 +202,7 @@ func (c *Client) get(path string) (*apiResponse, error) {
 	}
 
 	var result apiResponse
-	if err := json.Unmarshal(body, &result); err != nil {
+	if err := httpbody.Unmarshal(body, &result); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 	return &result, nil

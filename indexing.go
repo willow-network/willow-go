@@ -74,7 +74,7 @@ func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID str
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Large)).Decode(&response); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Large, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
 	return &response, nil
@@ -284,28 +284,42 @@ func routeQuery[T any](
 	}
 }
 
-// unwrapResponse handles both the validator's { success, data: T } envelope
-// and the indexer's raw T response, returning T in both cases.
+// unwrapResponse reads a routed query's answer: T in the API's {success,
+// data, error} envelope, or T alone (an indexer's answer, and the API's SQL
+// and GraphQL answers). It refuses an answer that holds more JSON than the
+// SDK decodes (see httpbody.CheckJSON) and decodes T once. An envelope that
+// reports a failure, or carries no data, is an error.
 func unwrapResponse[T any](raw []byte) (T, error) {
 	var zero T
-	// Try indexer-shaped raw T first (faster path).
-	if err := json.Unmarshal(raw, &zero); err == nil {
-		// Check if it's actually an envelope disguised as T — if T is a
-		// pointer to a struct and the JSON has `success` + `data`, prefer
-		// the data field.
-		var envelope struct {
-			Success *bool           `json:"success"`
-			Data    json.RawMessage `json:"data"`
-		}
-		if json.Unmarshal(raw, &envelope) == nil && envelope.Success != nil && len(envelope.Data) > 0 {
-			var wrapped T
-			if err := json.Unmarshal(envelope.Data, &wrapped); err == nil {
-				return wrapped, nil
-			}
-		}
-		return zero, nil
+	if err := httpbody.CheckJSON(raw); err != nil {
+		return zero, err
 	}
-	return zero, fmt.Errorf("failed to decode response")
+	// Whether it is an envelope; the probe decodes nothing else.
+	var probe struct {
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(raw, &probe) != nil || probe.Success == nil {
+		var result T
+		if err := json.Unmarshal(raw, &result); err != nil {
+			return zero, fmt.Errorf("failed to decode response: %w", err)
+		}
+		return result, nil
+	}
+	var envelope apiEnvelope
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return zero, fmt.Errorf("failed to decode response: %w", err)
+	}
+	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
+		if err := envelope.decode(nil); err != nil {
+			return zero, err
+		}
+		return zero, NewAPIError("the answer's envelope carries no data")
+	}
+	var result T
+	if err := envelope.decode(&result); err != nil {
+		return zero, err
+	}
+	return result, nil
 }
 
 // SqlQuery executes a SQL query against a subgrove and returns the answer
@@ -347,7 +361,7 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 	}
 
 	var result SqlResponse
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Large)).Decode(&result); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Large, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode SQL response: %w", err)
 	}
 

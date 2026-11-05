@@ -1,21 +1,30 @@
 // Package httpbody reads HTTP answers under a cap on their size, one per kind
-// of answer.
+// of answer, and refuses to decode one that holds more JSON than the SDK
+// decodes.
 //
 // A cap bounds the bytes the SDK reads of one answer, not the memory decoding
 // them takes: Go's JSON decoder builds a value for each element it reads, so
 // a few bytes of JSON (an empty object or array in a list) can take tens to
-// hundreds of bytes once decoded. An answer at a cap can take a multiple of
-// the cap in memory: measured, a list of empty objects decoded into maps keeps
-// about 19 times its length, and decoding a list of empty arrays into
-// interface{} values allocates about 40 times it.
+// hundreds of bytes once decoded. So before decoding an answer the SDK counts
+// what it holds (see CheckJSON): at most MaxValues units, each string, number,
+// true, false, or null costing one and each array or object ContainerCost,
+// nested at most MaxDepth deep. Measured, JSON decoded into interface{}
+// values, maps, or the SDK's types keeps at most about 40 bytes per unit
+// besides the bytes of its strings (decoding allocates up to about three
+// times that on the way), so an answer under the limit decodes to at most
+// about 80 MiB besides them.
 //
-// Each cap is the smallest that holds the largest honest answer of its routes
-// where the node bounds that answer; where the request sets an answer's size
-// (a query's limit, the slots asked for) and the node sets no maximum, the
-// cap is Large, and an answer past it is refused: ask for less.
+// A cap holds the largest answer the node serves on a route where the node
+// bounds it. Some answers have no bound on the node: the lists that aren't
+// paged (subgroves, validators, indexers, a subgrove's key grants, a DID's
+// permissions) and DID documents grow with the chain, and a query, a SQL or
+// GraphQL answer, an Ethereum call's proofs, or a historical answer is as
+// large as the request makes it. An answer past its cap or the value limit is
+// refused: ask for less (a lower limit, a narrower query, fewer slots).
 package httpbody
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,7 +48,7 @@ const (
 	// chunk.
 	Chunk = 2 << 20
 	// Tx caps an answer that carries what one transaction holds: CometBFT's
-	// /tx (a transaction of at most max_tx_bytes, 4 MiB, is 5.4 MiB in
+	// /tx (a transaction of at most max_tx_bytes, 4 MiB, is 5.33 MiB in
 	// base64, with its result beside it), and the API's /data value and
 	// /proof of a key. A value is at most what one transaction writes
 	// (max_data_payload_bytes, 512 KiB, for StoreData; under 4 MiB for any),
@@ -60,7 +69,9 @@ const (
 )
 
 // ErrTooLarge is what reading past an answer's cap returns, as a
-// *TooLargeError naming the cap (errors.Is(err, ErrTooLarge)).
+// *TooLargeError naming the cap, and what decoding an answer that holds more
+// JSON than the SDK decodes returns, as a *TooMuchJSONError (errors.Is(err,
+// ErrTooLarge)).
 var ErrTooLarge = errors.New("the answer is over the SDK's limit")
 
 // TooLargeError is an answer longer than Limit bytes, the cap of its route.
@@ -104,4 +115,104 @@ func (c *capped) Read(p []byte) (int, error) {
 		return max(n-int(over), 0), &TooLargeError{Limit: c.limit}
 	}
 	return n, err
+}
+
+const (
+	// MaxValues is the most JSON the SDK decodes of one answer, in units:
+	// each string, number, true, false, or null costs one, and each array or
+	// object ContainerCost. An honest answer holds far fewer: a page of 100
+	// documents of 10 fields is under 3,000, and a SQL answer of 100,000 rows
+	// of 10 columns under 1.9 million.
+	MaxValues = 1 << 21
+	// ContainerCost is what an array or object costs: decoded, one takes
+	// several times what a number or a short string takes (a map, about 340
+	// bytes with its first member).
+	ContainerCost = 8
+	// MaxDepth is the deepest the SDK decodes JSON nested. The node's JSON
+	// parser refuses a document nested deeper than 128.
+	MaxDepth = 512
+)
+
+// TooMuchJSONError is an answer that holds more JSON than the SDK decodes:
+// past MaxValues units, or nested deeper than MaxDepth.
+type TooMuchJSONError struct {
+	// Depth is true when the answer nests too deep, false when it holds
+	// too many values.
+	Depth bool
+}
+
+func (e *TooMuchJSONError) Error() string {
+	if e.Depth {
+		return fmt.Sprintf("the answer nests JSON deeper than the SDK decodes (%d levels)", MaxDepth)
+	}
+	return fmt.Sprintf("the answer holds more JSON values than the SDK decodes (%d, an array or object counting %d)",
+		MaxValues, ContainerCost)
+}
+
+// Is reports whether target is ErrTooLarge.
+func (e *TooMuchJSONError) Is(target error) bool {
+	return target == ErrTooLarge
+}
+
+// CheckJSON returns a *TooMuchJSONError when data, a JSON answer, holds more
+// than MaxValues units or nests deeper than MaxDepth, without decoding it. It
+// reads data once and allocates nothing. It doesn't validate data: JSON that
+// isn't valid passes, and the decoder refuses it.
+func CheckJSON(data []byte) error {
+	return checkJSON(data, MaxValues, MaxDepth)
+}
+
+func checkJSON(data []byte, maxValues, maxDepth int) error {
+	units, depth := 0, 0
+	for i := 0; i < len(data); i++ {
+		switch c := data[i]; {
+		case c == '"':
+			units++
+			for i++; i < len(data) && data[i] != '"'; i++ {
+				if data[i] == '\\' {
+					i++
+				}
+			}
+		case c == '[' || c == '{':
+			units += ContainerCost
+			if depth++; depth > maxDepth {
+				return &TooMuchJSONError{Depth: true}
+			}
+		case c == ']' || c == '}':
+			depth--
+		case c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z':
+			// A number, true, false, or null: skip to its end.
+			units++
+			for i+1 < len(data) && isScalarByte(data[i+1]) {
+				i++
+			}
+		}
+		if units > maxValues {
+			return &TooMuchJSONError{}
+		}
+	}
+	return nil
+}
+
+func isScalarByte(c byte) bool {
+	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '+' || c == '-'
+}
+
+// Unmarshal decodes data, a JSON answer, into v, unless it holds more JSON
+// than the SDK decodes (see CheckJSON).
+func Unmarshal(data []byte, v any) error {
+	if err := CheckJSON(data); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+// Decode reads r under limit (see ReadAll) and decodes it into v (see
+// Unmarshal).
+func Decode(r io.Reader, limit int64, v any) error {
+	data, err := ReadAll(r, limit)
+	if err != nil {
+		return err
+	}
+	return Unmarshal(data, v)
 }

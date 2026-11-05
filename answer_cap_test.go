@@ -18,10 +18,12 @@ import (
 )
 
 // paddedServer answers every request with status 200 and "{}" after pad bytes
-// of leading space: JSON, of pad+3 bytes.
+// of leading space: JSON, of pad+3 bytes. With body set, it answers body
+// instead.
 type paddedServer struct {
 	*httptest.Server
-	pad atomic.Int64
+	pad  atomic.Int64
+	body atomic.Pointer[[]byte]
 }
 
 func newPaddedServer(t *testing.T) *paddedServer {
@@ -31,6 +33,10 @@ func newPaddedServer(t *testing.T) *paddedServer {
 	s.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.Copy(io.Discard, r.Body)
 		w.Header().Set("Content-Type", "application/json")
+		if body := s.body.Load(); body != nil {
+			_, _ = w.Write(*body)
+			return
+		}
 		for left := s.pad.Load(); left > 0; {
 			n := min(left, int64(len(piece)))
 			if _, err := w.Write(piece[:n]); err != nil {
@@ -51,8 +57,34 @@ func newPaddedServer(t *testing.T) *paddedServer {
 // for an answer whose size the request sets (a query page, GraphQL, SQL,
 // matched logs, Ethereum state).
 func TestAnswersAreReadUpToTheirRoutesCap(t *testing.T) {
-	ctx := context.Background()
 	srv := newPaddedServer(t)
+	for _, route := range answerRoutes(t, srv.URL) {
+		limit := fmt.Sprintf("%d MiB", route.mib)
+		srv.pad.Store(route.mib<<20 + 1)
+		if err := route.call(); err == nil || !strings.Contains(err.Error(), limit+" limit") {
+			t.Errorf("%s, one byte over %s: %v; want a refusal past %s", route.name, limit, err, limit)
+		}
+		srv.pad.Store(route.mib<<20 - 3)
+		if err := route.call(); err != nil && strings.Contains(err.Error(), "MiB limit") {
+			t.Errorf("%s, %s exactly: %v; want it read", route.name, limit, err)
+		}
+	}
+}
+
+// answerRoute is one route whose answer the SDK reads: its name, its cap in
+// MiB, and a call that reads it.
+type answerRoute struct {
+	name string
+	mib  int64
+	call func() error
+}
+
+// answerRoutes returns every route whose answer the SDK reads, each sent to
+// url as the API, the CometBFT RPC, an indexer, and a storage node.
+func answerRoutes(t *testing.T, url string) []answerRoute {
+	t.Helper()
+	ctx := context.Background()
+	srv := struct{ URL string }{url}
 	client, err := NewClient(srv.URL, WithRPCURL(srv.URL), WithIndexerURL(srv.URL))
 	if err != nil {
 		t.Fatal(err)
@@ -70,11 +102,7 @@ func TestAnswersAreReadUpToTheirRoutesCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	signing := fileSigning(vectorIdentity(t, Ed25519), 1)
-	routes := []struct {
-		name string
-		mib  int64
-		call func() error
-	}{
+	return []answerRoute{
 		{"an API answer", 4, func() error { _, err := client.Registration.GetSubgrove(ctx, "sg"); return err }},
 		{"a balance", 4, func() error { _, err := client.Token.GetBalance(ctx, "did:willow:z1"); return err }},
 		{"the health check", 4, func() error { _, err := client.Health(ctx); return err }},
@@ -119,16 +147,5 @@ func TestAnswersAreReadUpToTheirRoutesCap(t *testing.T) {
 			_, err := NewEthOperations(srv.URL, nil).GetState(ctx, "0x"+strings.Repeat("11", 20), nil, 1)
 			return err
 		}},
-	}
-	for _, route := range routes {
-		limit := fmt.Sprintf("%d MiB", route.mib)
-		srv.pad.Store(route.mib<<20 + 1)
-		if err := route.call(); err == nil || !strings.Contains(err.Error(), limit+" limit") {
-			t.Errorf("%s, one byte over %s: %v; want a refusal past %s", route.name, limit, err, limit)
-		}
-		srv.pad.Store(route.mib<<20 - 3)
-		if err := route.call(); err != nil && strings.Contains(err.Error(), "MiB limit") {
-			t.Errorf("%s, %s exactly: %v; want it read", route.name, limit, err)
-		}
 	}
 }

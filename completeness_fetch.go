@@ -94,7 +94,7 @@ func parseMatchedLog(m matchedLogJSON) (Log, error) {
 // slice in the order served — the same order the commitment hashes them.
 func parseMatchedLogs(body []byte) ([]Log, error) {
 	var resp matchedLogsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := httpbody.Unmarshal(body, &resp); err != nil {
 		return nil, NewSerializationError("failed to unmarshal matched-logs response", err)
 	}
 	logs := make([]Log, len(resp.MatchedLogs))
@@ -164,7 +164,7 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&rpcResp); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &rpcResp); err != nil {
 		return out, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if rpcResp.Error != nil {

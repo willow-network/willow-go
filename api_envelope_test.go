@@ -468,3 +468,28 @@ func TestLightClientAppHashIsNotLabeledVerified(t *testing.T) {
 		t.Fatalf("GetLatestAppHash = %q, %v; GetVerifiedRootHash = %q, %v", latest, err1, deprecated, err2)
 	}
 }
+
+// A routed query's answer in the envelope is its data; an envelope reporting
+// a failure, at status 200, is an error, not an empty answer.
+func TestRoutedQueryReadsTheEnvelope(t *testing.T) {
+	answer := `{"success":true,"data":{"columns":["a"],"rows":[[1]]},"error":null}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	got, err := client.Indexing.SqlQueryWithSource(ctx, "sg", "SELECT a", false, QuerySourceValidator)
+	if err != nil || len(got.Result.Columns) != 1 || len(got.Result.Rows) != 1 {
+		t.Fatalf("an envelope: %+v, %v", got, err)
+	}
+	answer = `{"success":false,"data":null,"error":"subgrove sg is paused"}`
+	if got, err := client.Indexing.SqlQueryWithSource(ctx, "sg", "SELECT a", false, QuerySourceValidator); err == nil ||
+		!strings.Contains(err.Error(), "subgrove sg is paused") {
+		t.Fatalf("a failed envelope: %+v, %v; want its error", got, err)
+	}
+}

@@ -488,7 +488,7 @@ func (c *Client) queryAccountNonceState(ctx context.Context, did string) (*Accou
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&answer); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &answer); err != nil {
 		return nil, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if answer.Error != nil {

@@ -59,11 +59,15 @@ or as decimal strings in `TokenInfo` and `FeeSchedule`.
 The SDK reads at most a set number of bytes of each HTTP answer (from the
 API, the CometBFT RPC, an indexer, or a storage node), by route, and refuses
 a longer one with an error that names the limit. A limit bounds the bytes
-read, not the memory decoding them takes, which can be a multiple of them:
-measured, a list of empty JSON objects decoded into maps keeps about 19
-times its length, and decoding a list of empty arrays into `interface{}`
-values allocates about 40 times it. Each limit is the smallest that holds
-the largest answer the node serves on its routes, where the node bounds it:
+read, not the memory decoding them takes, which can be tens of times their
+length (a list of empty JSON objects decoded into maps). So the SDK also
+counts the JSON in an answer before decoding it, and refuses one that holds
+more than 2,097,152 units (each string, number, `true`, `false`, or `null`
+costs one, and each array or object eight) or nests deeper than 512 levels.
+Measured, an answer under that limit decodes to at most about 80 MiB besides
+the bytes of its strings. Honest answers hold far fewer: a SQL answer of
+100,000 rows of 10 columns is under 1.9 million. The byte limits, by route,
+hold the largest answer the node serves where the node bounds it:
 
 - 4 MiB: answers of fixed shape or short lists: nonces, balances, token
   info, fees, validators, indexers, health, `/tx/submit`, DID documents and

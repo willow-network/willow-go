@@ -560,7 +560,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 
 	// Parse successful response
 	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
+		if err := httpbody.Unmarshal(respBody, result); err != nil {
 			return NewSerializationError("failed to unmarshal response", err)
 		}
 	}
@@ -655,7 +655,7 @@ func (c *Client) postTx(ctx context.Context, body []byte, did string, nonce uint
 		}
 		return "", outcome, c.handleErrorResponse(resp.StatusCode, respBody)
 	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
+	if err := httpbody.Unmarshal(respBody, &envelope); err != nil {
 		return "", nonceUnknown, NewSerializationError("failed to parse /tx/submit response", err)
 	}
 	if !envelope.Success || envelope.Data == nil {

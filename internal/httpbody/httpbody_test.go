@@ -67,3 +67,50 @@ func (zeros) Read(p []byte) (int, error) {
 	clear(p)
 	return len(p), nil
 }
+
+// CheckJSON counts each string, number, true, false, and null as one unit
+// and each array or object as ContainerCost, keys included and text inside
+// strings not, and refuses past the limit or the depth.
+func TestCheckJSONCountsUnitsAndDepth(t *testing.T) {
+	for _, c := range []struct {
+		json  string
+		units int
+	}{
+		{`0`, 1},
+		{`-1.5e+3`, 1},
+		{`"a"`, 1},
+		{`true`, 1},
+		{`null`, 1},
+		{`[]`, ContainerCost},
+		{`{}`, ContainerCost},
+		{`[1,"x",false,null]`, ContainerCost + 4},
+		{`{"a":1,"b":[]}`, 2*ContainerCost + 3},
+		{`["[{,\"]}", "\\", "\\\"[" ]`, ContainerCost + 3},
+		{` [ 12 , 345 ] `, ContainerCost + 2},
+	} {
+		if err := checkJSON([]byte(c.json), c.units, MaxDepth); err != nil {
+			t.Errorf("%s at %d units: %v", c.json, c.units, err)
+		}
+		var tooMuch *TooMuchJSONError
+		if err := checkJSON([]byte(c.json), c.units-1, MaxDepth); !errors.As(err, &tooMuch) || tooMuch.Depth || !errors.Is(err, ErrTooLarge) {
+			t.Errorf("%s at %d units: %v; want it refused", c.json, c.units-1, err)
+		}
+		var v interface{}
+		if err := json.Unmarshal([]byte(c.json), &v); err != nil {
+			t.Errorf("%s isn't JSON: %v", c.json, err)
+		}
+	}
+	deep := strings.Repeat("[", MaxDepth) + strings.Repeat("]", MaxDepth)
+	if err := CheckJSON([]byte(deep)); err != nil {
+		t.Errorf("%d deep: %v", MaxDepth, err)
+	}
+	deeper := "[" + deep + "]"
+	var tooMuch *TooMuchJSONError
+	if err := CheckJSON([]byte(deeper)); !errors.As(err, &tooMuch) || !tooMuch.Depth || !errors.Is(err, ErrTooLarge) {
+		t.Errorf("%d deep: %v; want it refused", MaxDepth+1, err)
+	}
+	var v interface{}
+	if err := Unmarshal([]byte(deeper), &v); !errors.As(err, &tooMuch) || v != nil {
+		t.Errorf("Unmarshal of %d deep: %v, %v; want it refused undecoded", MaxDepth+1, err, v)
+	}
+}

@@ -2,7 +2,6 @@ package willow
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -151,7 +150,7 @@ func (d *Indexers) List(ctx context.Context) ([]IndexerInfo, error) {
 		Success bool          `json:"success"`
 		Data    []IndexerInfo `json:"data"`
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&envelope); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &envelope); err != nil {
 		return nil, fmt.Errorf("decode /indexers response: %w", err)
 	}
 
