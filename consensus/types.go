@@ -3,6 +3,7 @@ package consensus
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ByteArray is a []byte with JSON marshaling as a number array.
@@ -74,6 +75,81 @@ type TxResult struct {
 	GasUsed int64             `json:"gas_used"`
 	GasWant int64             `json:"gas_wanted"`
 	Data    json.RawMessage   `json:"data,omitempty"`
+}
+
+// BlockResult is CometBFT's /block answer: a block and its ID, as the RPC
+// node reports them. Nothing in it is verified.
+type BlockResult struct {
+	BlockID BlockID `json:"block_id"`
+	Block   Block   `json:"block"`
+}
+
+// BlockID names a block: its hash and its part set header, in hex.
+type BlockID struct {
+	Hash  string        `json:"hash"`
+	Parts PartSetHeader `json:"parts"`
+}
+
+// PartSetHeader is the count and Merkle root of a block's parts.
+type PartSetHeader struct {
+	Total uint32 `json:"total"`
+	Hash  string `json:"hash"`
+}
+
+// Block is a CometBFT block. Evidence is the block's evidence as the answer
+// carries it, as JSON.
+type Block struct {
+	Header     BlockHeader     `json:"header"`
+	Data       BlockData       `json:"data"`
+	Evidence   json.RawMessage `json:"evidence"`
+	LastCommit *Commit         `json:"last_commit"`
+}
+
+// BlockHeader is a block's header; hashes and the proposer's address are hex.
+type BlockHeader struct {
+	Version            BlockVersion `json:"version"`
+	ChainID            string       `json:"chain_id"`
+	Height             int64        `json:"height,string"`
+	Time               time.Time    `json:"time"`
+	LastBlockID        BlockID      `json:"last_block_id"`
+	LastCommitHash     string       `json:"last_commit_hash"`
+	DataHash           string       `json:"data_hash"`
+	ValidatorsHash     string       `json:"validators_hash"`
+	NextValidatorsHash string       `json:"next_validators_hash"`
+	ConsensusHash      string       `json:"consensus_hash"`
+	AppHash            string       `json:"app_hash"`
+	LastResultsHash    string       `json:"last_results_hash"`
+	EvidenceHash       string       `json:"evidence_hash"`
+	ProposerAddress    string       `json:"proposer_address"`
+}
+
+// BlockVersion is the block and app protocol versions a header names.
+type BlockVersion struct {
+	Block uint64 `json:"block,string"`
+	App   uint64 `json:"app,string"`
+}
+
+// BlockData holds a block's transactions, decoded from base64.
+type BlockData struct {
+	Txs [][]byte `json:"txs"`
+}
+
+// Commit is the validators' commit to a block: their signatures, each over
+// the block ID at Height and Round.
+type Commit struct {
+	Height     int64       `json:"height,string"`
+	Round      int32       `json:"round"`
+	BlockID    BlockID     `json:"block_id"`
+	Signatures []CommitSig `json:"signatures"`
+}
+
+// CommitSig is one validator's entry in a commit: BlockIDFlag 1 is absent, 2
+// a vote for the block, 3 a vote for nil. Signature is nil when absent.
+type CommitSig struct {
+	BlockIDFlag      int       `json:"block_id_flag"`
+	ValidatorAddress string    `json:"validator_address"`
+	Timestamp        time.Time `json:"timestamp"`
+	Signature        []byte    `json:"signature"`
 }
 
 // Transaction represents a generic transaction envelope.

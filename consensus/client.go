@@ -275,8 +275,9 @@ func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) 
 	return status, nil
 }
 
-// GetLatestBlock retrieves the latest block.
-func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, error) {
+// GetLatestBlock retrieves the latest block, as the RPC node reports it:
+// nothing in it is verified.
+func (c *Client) GetLatestBlock(ctx context.Context) (*BlockResult, error) {
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -293,16 +294,17 @@ func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, er
 		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
 	}
 
-	var block map[string]interface{}
+	var block BlockResult
 	if err := json.Unmarshal(resp.Result, &block); err != nil {
 		return nil, fmt.Errorf("failed to parse block: %w", err)
 	}
 
-	return block, nil
+	return &block, nil
 }
 
-// GetBlock retrieves a block by height.
-func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interface{}, error) {
+// GetBlock retrieves the block at height, as the RPC node reports it:
+// nothing in it is verified.
+func (c *Client) GetBlock(ctx context.Context, height int64) (*BlockResult, error) {
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -321,12 +323,12 @@ func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interfa
 		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
 	}
 
-	var block map[string]interface{}
+	var block BlockResult
 	if err := json.Unmarshal(resp.Result, &block); err != nil {
 		return nil, fmt.Errorf("failed to parse block: %w", err)
 	}
 
-	return block, nil
+	return &block, nil
 }
 
 // GetValidators retrieves the validators at a given height.

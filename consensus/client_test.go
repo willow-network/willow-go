@@ -116,3 +116,68 @@ func TestNewClientDefaultsTheTimeout(t *testing.T) {
 		t.Errorf("a config of 1 s: %v", got)
 	}
 }
+
+// testBlock is a /block answer as CometBFT writes it: 64-bit integers as
+// decimal strings, hashes and addresses in hex, transactions and signatures
+// in base64.
+const testBlock = `{"jsonrpc":"2.0","id":-1,"result":{"block_id":{"hash":"B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1","parts":{"total":1,"hash":"B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2B2"}},` +
+	`"block":{"header":{"version":{"block":"11"},"chain_id":"test-chain","height":"7","time":"1970-01-01T00:00:01.5Z",` +
+	`"last_block_id":{"hash":"A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1","parts":{"total":1,"hash":"A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2"}},` +
+	`"last_commit_hash":"C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1C1","data_hash":"E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",` +
+	`"validators_hash":"C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2","next_validators_hash":"C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2C2",` +
+	`"consensus_hash":"C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3C3","app_hash":"C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4",` +
+	`"last_results_hash":"C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5C5","evidence_hash":"E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",` +
+	`"proposer_address":"D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1"},"data":{"txs":["AQID","BAU="]},"evidence":{"evidence":[]},` +
+	`"last_commit":{"height":"6","round":0,"block_id":{"hash":"A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1","parts":{"total":1,"hash":"A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2A2"}},` +
+	`"signatures":[{"block_id_flag":2,"validator_address":"D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1","timestamp":"1970-01-01T00:00:01.5Z",` +
+	`"signature":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+Pw=="},` +
+	`{"block_id_flag":1,"validator_address":"","timestamp":"0001-01-01T00:00:00Z","signature":null}]}}}}`
+
+// GetBlock and GetLatestBlock decode the block into typed fields, asking for
+// the height given (or none, for the latest).
+func TestGetBlockDecodesTheBlock(t *testing.T) {
+	var heights []interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Method string                 `json:"method"`
+			Params map[string]interface{} `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Method != "block" {
+			t.Errorf("request %+v (%v), want the block method", req, err)
+		}
+		heights = append(heights, req.Params["height"])
+		_, _ = w.Write([]byte(testBlock))
+	}))
+	defer srv.Close()
+	client := NewClient(ClientConfig{RPCURL: srv.URL})
+
+	byHeight, err := client.GetBlock(context.Background(), 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, err := client.GetLatestBlock(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []*BlockResult{byHeight, latest} {
+		h := got.Block.Header
+		if got.BlockID.Hash != "B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1B1" || got.BlockID.Parts.Total != 1 ||
+			h.Version.Block != 11 || h.ChainID != "test-chain" || h.Height != 7 || !h.Time.Equal(time.Unix(1, 5e8)) ||
+			h.LastBlockID.Hash != "A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1A1" ||
+			h.AppHash != "C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4C4" ||
+			h.ProposerAddress != "D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1D1" {
+			t.Fatalf("block %+v", got)
+		}
+		if txs := got.Block.Data.Txs; len(txs) != 2 || string(txs[0]) != "\x01\x02\x03" || string(txs[1]) != "\x04\x05" {
+			t.Fatalf("transactions %v", txs)
+		}
+		c := got.Block.LastCommit
+		if c == nil || c.Height != 6 || c.Round != 0 || len(c.Signatures) != 2 || c.Signatures[0].BlockIDFlag != 2 ||
+			len(c.Signatures[0].Signature) != 64 || c.Signatures[1].Signature != nil {
+			t.Fatalf("last commit %+v", c)
+		}
+	}
+	if len(heights) != 2 || heights[0] != "7" || heights[1] != nil {
+		t.Fatalf("heights asked for %v, want [7 <nil>]", heights)
+	}
+}
