@@ -175,10 +175,8 @@ nonces with no gap below them: a write that landed above a nonce not yet used
 (a write still pending, or one that never landed) doesn't show as landed, so
 `WaitUntilLanded` waits for every earlier nonce and fails at the context's
 deadline if one never lands. The client may also hand that write's nonce out
-again once its 120 s hold lapses. A write then refused as used under it is
-signed again under the next free nonce, unless this client sent the same
-write (the same transaction but for its nonce and signature) under that
-nonce before: that one fails with `willow.ErrNonceUsed` (see below).
+again once its 120 s hold lapses; a write then refused as used under it fails
+with `willow.ErrNonceUsed` (see below).
 
 ```go
 client, err := willow.NewClient("http://localhost:3031",
@@ -188,9 +186,9 @@ client, err := willow.NewClient("http://localhost:3031",
 A nonce stays held while a submission under it is in flight, however long
 that takes. A refusal at CheckTx gives its nonce back, unless it is the
 node's own error for that nonce saying it is held by a pending transaction
-(the write fails and the nonce stays held) or already used (the write is
-signed again under the next free nonce: no transaction under the used one can
-run). Text a refusal only quotes, such as the expected message a signature
+(the write fails and the nonce stays held) or already used, or at or below
+the base (the write fails with `willow.ErrNonceUsed` and the nonce is marked
+used). Text a refusal only quotes, such as the expected message a signature
 mismatch repeats, says nothing about the nonce.
 
 A write whose submission fails in transit (a network error or a 5xx) may
@@ -216,11 +214,11 @@ or another `MayLand` error (also how the API reports CometBFT refusing a
 transaction identical to one it has already seen), means the earlier attempt
 may be pending: wait for the nonce. Sending the write again under a fresh
 nonce while the earlier attempt is valid can run it twice. For the same
-reason, a write refused as used under a nonce this client sent the same write
-under before (the same transaction but for its nonce and signature) fails with
-`willow.ErrNonceUsed` rather than being signed again; a different write that
-used the nonce says nothing about this one, which is signed again under the
-next free nonce.
+reason, a write refused as used, with or without `WithNonce`, fails with
+`willow.ErrNonceUsed` and is never signed again under another nonce on its
+own: the transaction that used the nonce may be this write (an API can
+forward an attempt to the chain while answering that its nonce is used), so
+read what it wrote before sending it again.
 
 ## Quick Start
 

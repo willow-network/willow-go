@@ -268,9 +268,8 @@ func TestRefusedWriteGivesItsNonceBack(t *testing.T) {
 
 // A refusal saying the nonce is held by a pending transaction keeps it taken
 // and fails the write; one saying it is already used or at or below the base
-// marks it used and signs the write again under the next nonce (this client
-// never sent anything under those nonces). Only the node's text for this
-// transaction's own nonce and DID counts.
+// marks it used and fails the write with ErrNonceUsed. Only the node's text
+// for this transaction's own nonce and DID counts.
 func TestHeldAndUsedRefusals(t *testing.T) {
 	s := newNonceServer(t, 0)
 	client := s.client(nil, false)
@@ -285,13 +284,17 @@ func TestHeldAndUsedRefusals(t *testing.T) {
 		t.Fatalf("after held: %+v, %v, want nonce 2 (1 stays held)", write, err)
 	}
 
-	s.queue(
-		refuse("Signature validation failed: Invalid nonce: %d already used (replay)"),
-		refuse("Invalid nonce: %d <= base nonce 9"),
-		refuse("Invalid nonce: %d already used (replay)"),
-	)
-	write, err := store(t, client, "used")
-	if err != nil || write.Nonce != 6 {
+	for i, log := range []string{
+		"Signature validation failed: Invalid nonce: %d already used (replay)",
+		"Invalid nonce: %d <= base nonce 9",
+		"Invalid nonce: %d already used (replay)",
+	} {
+		s.queue(refuse(log))
+		if _, err := store(t, client, "used"); !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != uint64(3+i) {
+			t.Fatalf("%q: %v, want ErrNonceUsed for nonce %d", log, err, 3+i)
+		}
+	}
+	if write, err := store(t, client, "used"); err != nil || write.Nonce != 6 {
 		t.Fatalf("after three used refusals: %+v, %v, want nonce 6", write, err)
 	}
 	if got := s.sent(); fmt.Sprint(got) != "[1 2 3 4 5 6]" {
@@ -388,7 +391,7 @@ func TestHandedOutNoncesLapse(t *testing.T) {
 		t.Fatalf("after nonce 1's hold: %d, want 1 again", n)
 	}
 	// Nonce 1 is held from now; settling 2 as accepted restarts its hold too.
-	a.settle("did:willow:a", 2, nonceAccepted, [32]byte{})
+	a.settle("did:willow:a", 2, nonceAccepted)
 	clock.advance(NonceHold - time.Second)
 	if n := take(); n != 3 {
 		t.Fatalf("with 1 and 2 held: %d, want 3", n)
@@ -572,7 +575,7 @@ func TestInFlightNoncesDontLapse(t *testing.T) {
 	if n := take(); n != 2 {
 		t.Fatalf("with 1 in flight: %d, want 2", n)
 	}
-	a.settle(did, 1, nonceAccepted, [32]byte{})
+	a.settle(did, 1, nonceAccepted)
 	clock.advance(NonceHold - time.Second)
 	if n := take(); n != 3 {
 		t.Fatalf("with 1 held and 2 in flight: %d, want 3", n)
@@ -623,11 +626,11 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 	if err := a.begin(did, 1, nil); !errors.Is(err, errNonceInFlight) {
 		t.Fatalf("a second submission under 1 while the first is in flight: %v", err)
 	}
-	a.settle(did, 1, nonceAccepted, [32]byte{})  // the first is accepted
+	a.settle(did, 1, nonceAccepted)              // the first is accepted
 	if err := a.begin(did, 1, nil); err != nil { // a second submission under 1
 		t.Fatal(err)
 	}
-	a.settle(did, 1, nonceFree, [32]byte{}) // the second is refused before CheckTx
+	a.settle(did, 1, nonceFree) // the second is refused before CheckTx
 	if n, _ := a.take(did, AccountNonceState{}); n != 2 {
 		t.Fatalf("after one submission under 1 was accepted: took %d, want 2", n)
 	}
@@ -639,7 +642,7 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 	if err := b.begin(did, 1, nil); err != nil {
 		t.Fatal(err)
 	}
-	b.settle(did, 1, nonceFree, [32]byte{})
+	b.settle(did, 1, nonceFree)
 	if n, _ := b.take(did, AccountNonceState{}); n != 1 {
 		t.Fatalf("after the reserved nonce's only submission was refused: took %d, want 1 back", n)
 	}
@@ -746,92 +749,30 @@ func TestWithNonceRefusesANonceInFlight(t *testing.T) {
 	}
 }
 
-// A refusal as used of a nonce this client sent the same write under before
-// (its hold lapsed, and the chain didn't show it used) may be that write
-// landing: the write fails with ErrNonceUsed rather than being signed again
-// under another nonce. A different write that used the nonce says nothing
-// about this one, which is signed again under the next free nonce.
-func TestUsedNonceThisClientSentIsNotSignedAgain(t *testing.T) {
-	s := newNonceServer(t, 0)
-	clock := newFakeClock()
-	client := s.client(clock.now, false)
-	if write, err := store(t, client, "a"); err != nil || write.Nonce != 1 {
-		t.Fatalf("%+v, %v", write, err)
-	}
-	clock.advance(NonceHold)
-
-	// Another write takes 1 and is refused as used: "a" may have used it, so
-	// "b" is signed again under 2.
-	s.queue(refuse("Invalid nonce: %d already used (replay)"))
-	if write, err := store(t, client, "b"); err != nil || write.Nonce != 2 {
-		t.Fatalf("another write refused under a used nonce: %+v, %v, want it signed again under 2", write, err)
-	}
-	clock.advance(NonceHold)
-
-	// "b" again takes 2 (1 is seen used) and is refused as used: the "b"
-	// accepted under 2 may be what used it, so it fails with ErrNonceUsed.
-	s.queue(refuse("Invalid nonce: %d already used (replay)"))
-	_, err := store(t, client, "b")
-	var werr *WriteError
-	if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 2 {
-		t.Fatalf("the same write refused as used: %v, want ErrNonceUsed for nonce 2", err)
-	}
-	if write, err := store(t, client, "c"); err != nil || write.Nonce != 3 {
-		t.Fatalf("next: %+v, %v, want nonce 3", write, err)
-	}
-	if got := s.sent(); fmt.Sprint(got) != "[1 1 2 2 3]" {
-		t.Fatalf("sent nonces %v, want [1 1 2 2 3]", got)
-	}
-}
-
-// A write's digest leaves out its nonce and signature, so the same write
-// signed under two nonces shares it, and another write doesn't.
-func TestWriteDigestIdentifiesTheWriteApartFromItsNonce(t *testing.T) {
-	under := func(key string, nonce uint64, signature byte) []byte {
-		body, err := json.Marshal(map[string]interface{}{"StoreData": map[string]interface{}{
-			"subgrove_id": "sg", "key": key, "data": []byte(`{"k":1}`), "owner_did": "did:willow:a",
-			"signature": []byte{signature}, "public_key_id": "did:willow:a#key-1", "nonce": nonce,
-		}})
-		if err != nil {
-			t.Fatal(err)
+// A refusal saying a nonce the client handed out is already used (or at or
+// below the base) fails the write with ErrNonceUsed, the nonce marked used:
+// the write isn't signed again under another nonce. An API can answer so
+// while forwarding the first attempt, which then lands, and a second
+// signature under a fresh nonce would run the write twice.
+func TestUsedRefusalIsNotSignedAgain(t *testing.T) {
+	for _, log := range []string{
+		"Invalid nonce: %d already used (replay)",
+		"Nonce validation failed: Invalid nonce: %d <= base nonce 9",
+	} {
+		s := newNonceServer(t, 0)
+		client := s.client(nil, false)
+		s.queue(refuse(log))
+		_, err := store(t, client, "k")
+		var werr *WriteError
+		var txErr *TransactionError
+		if !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.Nonce != 1 || werr.MayLand || !errors.As(err, &txErr) {
+			t.Fatalf("%q: %v; want ErrNonceUsed for nonce 1 carrying the refusal", log, err)
 		}
-		return body
-	}
-	if writeDigest(under("k", 1, 1)) != writeDigest(under("k", 2, 2)) {
-		t.Error("the same write under two nonces has two digests")
-	}
-	if writeDigest(under("k", 1, 1)) == writeDigest(under("j", 1, 1)) {
-		t.Error("two writes share a digest")
-	}
-	file, _ := json.Marshal(map[string]interface{}{"DeleteFileManifest": map[string]interface{}{"key": "k", "nonce": 1}})
-	if writeDigest(file) == writeDigest(under("k", 1, 1)) {
-		t.Error("two kinds share a digest")
-	}
-
-	// Through the allocator: only the same write's earlier submission counts.
-	const did = "did:willow:a"
-	a := newNonceAllocator(newFakeClock().now)
-	same, other := writeDigest(under("k", 1, 1)), writeDigest(under("j", 1, 1))
-	begin := func() {
-		t.Helper()
-		if err := a.begin(did, 1, nil); err != nil {
-			t.Fatal(err)
+		if got := s.sent(); fmt.Sprint(got) != "[1]" {
+			t.Fatalf("%q: sent nonces %v, want the one transaction", log, got)
 		}
-	}
-	begin()
-	if a.settle(did, 1, nonceAccepted, same) {
-		t.Fatal("nothing was sent under 1 before")
-	}
-	begin()
-	if a.settle(did, 1, nonceUnknown, other) {
-		t.Fatal("another write's submission counted as this one's")
-	}
-	begin()
-	if !a.settle(did, 1, nonceFree, same) {
-		t.Fatal("the same write's accepted submission under 1 wasn't counted")
-	}
-	begin()
-	if !a.settle(did, 1, nonceFree, other) {
-		t.Fatal("the other write's submission that may have landed under 1 wasn't counted")
+		if write, err := store(t, client, "next"); err != nil || write.Nonce != 2 {
+			t.Fatalf("%q: next write %+v, %v; want nonce 2 (1 used)", log, write, err)
+		}
 	}
 }
