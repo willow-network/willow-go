@@ -2,12 +2,12 @@
 //
 // This example demonstrates:
 // - Generating DIDs with different signature algorithms
-// - Registering a DID
-// - Querying apps and subgroves
+// - Listing subgroves and reading one
+// - Registering a subgrove: a signed RegisterSubgrove transaction
 //
-// Note: Creating apps and subgroves requires submitting transactions
-// through the consensus layer. This example shows the read operations
-// available through the SDK.
+// It doesn't register a DID: a DID is registered on chain by a RegisterDid
+// transaction, which this SDK doesn't build, so register and fund the
+// owner's DID before it signs the subgrove's registration.
 //
 // Run with: go run ./examples/registration
 
@@ -33,7 +33,7 @@ func main() {
 	}
 	defer client.Close()
 
-	// 1. Generate and register Ed25519 DID (recommended)
+	// 1. Generate an Ed25519 DID (recommended)
 	fmt.Println("1. Generating Ed25519 DID (recommended)...")
 	ed25519Identity, err := willow.NewIdentity(willow.Ed25519)
 	if err != nil {
@@ -47,10 +47,9 @@ func main() {
 	// not chosen. The chain accepts a registration only for the exact derived
 	// id, and the fee is paid from that id's own balance, so a new DID must be
 	// FUNDED before it can be registered. A DID is registered by a RegisterDid
-	// transaction, which this SDK does not build; RegisterDID says so.
-	if _, err = client.RegisterDID(ctx, ed25519Identity.DidDocument); err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	}
+	// transaction, which this SDK does not build.
+	fmt.Println("   Register and fund it with a RegisterDid transaction (not built by this SDK)")
+	fmt.Println()
 
 	// 2. Generate Secp256k1 DID (Ethereum-compatible)
 	fmt.Println("2. Generating Secp256k1 DID (Ethereum-compatible)...")

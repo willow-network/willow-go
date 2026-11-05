@@ -2,7 +2,8 @@
 //
 // This example demonstrates:
 // - Creating a client
-// - Generating and registering a DID
+// - Generating a DID (registering it takes a RegisterDid transaction, which
+//   this SDK doesn't build)
 // - Setting identity for per-request signing
 // - Storing data and reading it back (unverified)
 //
@@ -45,11 +46,11 @@ func main() {
 	fmt.Printf("   Public Key ID: %s\n\n", identity.PublicKeyID())
 
 	// 3. Register the DID. A DID is registered on chain by a RegisterDid
-	// transaction, which this SDK does not build; RegisterDID says so.
+	// transaction, which this SDK does not build: register (and fund) it
+	// before it signs writes.
 	fmt.Println("3. Registering DID...")
-	if _, err = client.RegisterDID(ctx, identity.DidDocument); err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	}
+	fmt.Println("   A RegisterDid transaction (not built by this SDK) registers it")
+	fmt.Println()
 
 	// 4. Set identity for per-request signing
 	fmt.Println("4. Setting identity...")

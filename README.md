@@ -42,7 +42,7 @@ subgroves, DIDs, or permissions. The write methods this SDK builds no
 transaction for (`RegisterDID`, `Data.Store`, `Data.Update`, `Data.Delete`,
 `Data.BatchStore`, `Registration.UpdateSubgrove`, `GrantPermission`, and
 `RevokePermission`) send nothing and return an error naming the supported
-path, for which `willow.IsUnsupported(err)` is true.
+path, for which `willow.IsUnsupported(err)` is true; they are deprecated.
 
 ## API responses
 
@@ -478,13 +478,13 @@ response, err := client.Indexing.Execute(ctx, "uniswap-v3",
 )
 
 // Using query builder
-query := willow.NewGraphQLQuery(`query { pools { id } }`).
+query := willow.NewGraphQLQuery(`query Pools($first: Int!) { pools(first: $first) { id } }`).
     Variable("first", 100).
     Build()
 
-response, err := client.Indexing.QueryUnverified(ctx, "uniswap-v3", query)
+response, err = client.Indexing.QueryUnverified(ctx, "uniswap-v3", query)
 
-// Execute and unmarshal directly
+// Execute and unmarshal the answer's data directly
 var result struct {
     Swaps []struct {
         ID        string `json:"id"`
@@ -492,7 +492,11 @@ var result struct {
     } `json:"swaps"`
 }
 
-err := client.Indexing.ExecuteWithResult(ctx, "uniswap-v3", query, vars, &result)
+err = client.Indexing.ExecuteWithResult(ctx, "uniswap-v3",
+    `query GetSwaps($first: Int!) { swaps(first: $first) { id timestamp } }`,
+    map[string]interface{}{"first": 10},
+    &result,
+)
 ```
 
 `Execute`, `ExecuteWithResult`, and `QueryUnverified` ask for no proof and
@@ -518,7 +522,11 @@ instead of presenting data as verified, and `Data.QueryUnverified` and
 The `lightclient` package keeps a trusted CometBFT header. Its
 `VerifyHeader` checks a later header's chain id, height and time, the
 trusting period, clock drift, an adjacent header's validator-set hash, and
-the voting power its commit lists; it does not verify the commit signatures.
+the voting power its commit lists, counted from the validator set the block
+itself carries; it does not verify the commit signatures, or tie that
+validator set to the header, so a header anyone can build passes. The
+result's `ChecksPassed` says only that those checks passed (`Verified`, the
+same value, is deprecated).
 
 ```go
 import "github.com/willow-network/willow-go/lightclient"
@@ -577,9 +585,11 @@ endpoints the light client took it from, not verified against the validators.
 ```go
 import "github.com/willow-network/willow-go/consensus"
 
-// Create consensus client
+// Create consensus client: BroadcastTxSync sends to the API's /tx/submit,
+// so it needs APIURL; RPCURL is for the CometBFT reads (GetTx, GetBlock, ...)
 consensusClient := consensus.NewClient(consensus.ClientConfig{
     RPCURL:  "http://localhost:26657",
+    APIURL:  "http://localhost:3031",
     Timeout: 30 * time.Second,
 })
 
@@ -669,16 +679,17 @@ client, err := willow.NewClient(url, willow.WithRetryConfig(config))
 The SDK includes several examples demonstrating common use cases:
 
 ```bash
-# Basic usage - DID generation, authentication, data storage
+# Basic usage - DID generation, signed requests, storing and reading data
 go run ./examples/basic_usage
 
-# Data operations - CRUD, queries, batch operations
+# Data operations - storing, reading, and querying data, and the writes this
+# SDK doesn't build (update, delete), which return an unsupported error
 go run ./examples/data_operations
 
 # Light client - a trusted CometBFT header, and what the SDK verifies
 go run ./examples/light_client
 
-# Registration - DIDs, subgroves
+# Registration - DID generation, listing, reading, and registering subgroves
 go run ./examples/registration
 
 # GraphQL indexing - Query indexed blockchain data
