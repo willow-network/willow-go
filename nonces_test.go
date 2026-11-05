@@ -620,9 +620,14 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 	if err != nil || n != 1 {
 		t.Fatalf("take = %d, %v", n, err)
 	}
-	a.begin(did, 1)                             // a second submission under 1
-	a.settle(did, 1, nonceAccepted, [32]byte{}) // the second is accepted
-	a.settle(did, 1, nonceFree, [32]byte{})     // the first is refused before CheckTx
+	if err := a.begin(did, 1, nil); !errors.Is(err, errNonceInFlight) {
+		t.Fatalf("a second submission under 1 while the first is in flight: %v", err)
+	}
+	a.settle(did, 1, nonceAccepted, [32]byte{})  // the first is accepted
+	if err := a.begin(did, 1, nil); err != nil { // a second submission under 1
+		t.Fatal(err)
+	}
+	a.settle(did, 1, nonceFree, [32]byte{}) // the second is refused before CheckTx
 	if n, _ := a.take(did, AccountNonceState{}); n != 2 {
 		t.Fatalf("after one submission under 1 was accepted: took %d, want 2", n)
 	}
@@ -631,7 +636,9 @@ func TestSettleTouchesOnlyItsOwnSubmission(t *testing.T) {
 	if n, _ := b.reserve(did, AccountNonceState{}); n != 1 {
 		t.Fatalf("reserve = %d", n)
 	}
-	b.begin(did, 1)
+	if err := b.begin(did, 1, nil); err != nil {
+		t.Fatal(err)
+	}
 	b.settle(did, 1, nonceFree, [32]byte{})
 	if n, _ := b.take(did, AccountNonceState{}); n != 1 {
 		t.Fatalf("after the reserved nonce's only submission was refused: took %d, want 1 back", n)
@@ -692,6 +699,50 @@ func TestWithNonceSendsAWriteAgainUnderItsNonce(t *testing.T) {
 	}
 	if got := s.sent(); fmt.Sprint(got) != "[1 1 2 1 5 6]" {
 		t.Fatalf("sent nonces %v, want [1 1 2 1 5 6]", got)
+	}
+}
+
+// WithNonce sends nothing under a nonce another write from this client has a
+// submission in flight under: the check and the claim are one step, so a
+// write that took the nonce first keeps it alone, and one that comes after
+// takes another. A file write under a nonce in flight is refused the same way.
+func TestWithNonceRefusesANonceInFlight(t *testing.T) {
+	s := newNonceServer(t, 0)
+	client := s.client(nil, false)
+	ctx := context.Background()
+	arrived, release := make(chan struct{}), make(chan struct{})
+	s.mu.Lock()
+	s.hold = func() { close(arrived); <-release }
+	s.mu.Unlock()
+	slow := make(chan error, 1)
+	go func() {
+		_, err := store(t, client, "slow") // takes nonce 1
+		slow <- err
+	}()
+	<-arrived
+
+	_, err := client.Data.StoreItem(ctx, "sg", "other", map[string]interface{}{"k": 1}, WithNonce(1))
+	var werr *WriteError
+	if !errors.As(err, &werr) || werr.Nonce != 1 || werr.MayLand || errors.Is(err, ErrNonceUsed) {
+		t.Errorf("WithNonce(1) while a write is in flight under 1: %v; want a WriteError for nonce 1, not sent", err)
+	}
+	if err := client.Files.Delete("sg", "f", fileSigning(vectorIdentity(t, Ed25519), 1)); err == nil {
+		t.Error("a file write under nonce 1 while a write is in flight under it was sent")
+	}
+	if write, err := store(t, client, "next"); err != nil || write.Nonce != 2 {
+		t.Errorf("a write meanwhile: %+v, %v; want nonce 2", write, err)
+	}
+	close(release)
+	if err := <-slow; err != nil {
+		t.Fatal(err)
+	}
+	if got := s.sent(); fmt.Sprint(got) != "[2 1]" {
+		t.Fatalf("sent nonces %v, want [2 1]: nothing else under 1", got)
+	}
+
+	// Once it settles, a write under the nonce is sent.
+	if write, err := client.Data.StoreItem(ctx, "sg", "slow", map[string]interface{}{"k": "slow"}, WithNonce(1)); err != nil || write.Nonce != 1 {
+		t.Fatalf("WithNonce(1) after the first settled: %+v, %v", write, err)
 	}
 }
 
@@ -761,19 +812,25 @@ func TestWriteDigestIdentifiesTheWriteApartFromItsNonce(t *testing.T) {
 	const did = "did:willow:a"
 	a := newNonceAllocator(newFakeClock().now)
 	same, other := writeDigest(under("k", 1, 1)), writeDigest(under("j", 1, 1))
-	a.begin(did, 1)
+	begin := func() {
+		t.Helper()
+		if err := a.begin(did, 1, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	begin()
 	if a.settle(did, 1, nonceAccepted, same) {
 		t.Fatal("nothing was sent under 1 before")
 	}
-	a.begin(did, 1)
+	begin()
 	if a.settle(did, 1, nonceUnknown, other) {
 		t.Fatal("another write's submission counted as this one's")
 	}
-	a.begin(did, 1)
+	begin()
 	if !a.settle(did, 1, nonceFree, same) {
 		t.Fatal("the same write's accepted submission under 1 wasn't counted")
 	}
-	a.begin(did, 1)
+	begin()
 	if !a.settle(did, 1, nonceFree, other) {
 		t.Fatal("the other write's submission that may have landed under 1 wasn't counted")
 	}

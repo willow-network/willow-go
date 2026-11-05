@@ -344,20 +344,39 @@ func (a *nonceAllocator) pick(did string, state AccountNonceState, claim func(*n
 	}
 }
 
+// errNonceInFlight is begin's refusal of a nonce under which a submission
+// from this client is in flight.
+var errNonceInFlight = errors.New("a submission under the nonce from this client is in flight")
+
 // begin records a submission under nonce, a nonce the caller chose, starting
 // now: the nonce stays taken until it settles. It replaces a reservation of
-// the nonce and keeps any hold an earlier submission left.
-func (a *nonceAllocator) begin(did string, nonce uint64) {
+// the nonce and keeps any hold an earlier submission left. Given state, the
+// chain's report, it folds that in first and refuses with ErrNonceUsed a
+// nonce it shows used. It refuses with errNonceInFlight a nonce under which a
+// submission from this client is in flight (a write that took it, or another
+// begun under it). The checks and the claim are made under one lock, so no
+// write takes the nonce between them.
+func (a *nonceAllocator) begin(did string, nonce uint64, state *AccountNonceState) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	acct := a.account(did)
+	if state != nil {
+		a.merge(acct, *state, a.now())
+		if acct.view().IsUsed(nonce) {
+			return ErrNonceUsed
+		}
+	}
 	claim := acct.claims[nonce]
+	if claim != nil && claim.inFlight > 0 {
+		return errNonceInFlight
+	}
 	if claim == nil {
 		claim = &nonceClaim{}
 		acct.claims[nonce] = claim
 	}
 	claim.inFlight++
 	claim.reserved = time.Time{}
+	return nil
 }
 
 // settle records what one submission of the write digest (see writeDigest)
@@ -586,7 +605,10 @@ type writeOptions struct {
 // API reports CometBFT refusing a transaction identical to one it has already
 // seen), means a transaction under the nonce, most likely the earlier
 // attempt, may be pending: wait for it with WaitUntilLanded. This attempt's
-// outcome never frees the hold the earlier attempt left on the nonce.
+// outcome never frees the hold the earlier attempt left on the nonce. While a
+// submission under the nonce from this client is in flight (a write that took
+// it, or another sent under it), the write sends nothing and returns a
+// *WriteError (not ErrNonceUsed): send it again once that one returns.
 func WithNonce(nonce uint64) WriteOption {
 	return func(o *writeOptions) {
 		o.nonce, o.hasNonce = nonce, true
@@ -641,18 +663,22 @@ func (c *Client) signedWrite(ctx context.Context, did string, opts []WriteOption
 }
 
 // writeUnder sends a write under nonce, a nonce the caller chose (WithNonce):
-// unless the chain already shows it used, once, never under another nonce.
+// unless the chain already shows it used, or a submission under it from this
+// client is in flight, once, never under another nonce.
 func (c *Client) writeUnder(ctx context.Context, did string, nonce uint64, build func(nonce uint64) (interface{}, error)) (*WriteResult, error) {
 	state, err := c.GetAccountNonce(ctx, did)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the account nonce: %w", err)
 	}
-	if c.nonces.observe(did, *state).IsUsed(nonce) {
+	switch err := c.nonces.begin(did, nonce, state); {
+	case errors.Is(err, ErrNonceUsed):
 		return nil, &WriteError{DID: did, Nonce: nonce, Err: fmt.Errorf(
 			"%w: the chain shows nonce %d of %s used, so the write wasn't sent; if an earlier attempt of it was sent under this nonce, "+
 				"that attempt landed: read what it wrote before sending the write again under a fresh nonce", ErrNonceUsed, nonce, did)}
+	case err != nil:
+		return nil, &WriteError{DID: did, Nonce: nonce, Err: fmt.Errorf(
+			"%w, so the write wasn't sent: send it under nonce %d once that submission returns", err, nonce)}
 	}
-	c.nonces.begin(did, nonce)
 	result, outcome, _, err := c.writeOnce(ctx, did, nonce, build)
 	if err != nil && outcome == nonceUsed {
 		return nil, usedNonceError(err, "if an earlier attempt of this write was sent under it, that attempt landed; "+
@@ -722,13 +748,16 @@ func usedNonceError(err error, why string) error {
 // submitSigned submits a transaction did signed under nonce, a nonce the
 // caller chose, and records the outcome, so that this client's own writes
 // skip the nonce while it is in flight and as long as its outcome holds it.
-// An unsigned transaction (did empty) records nothing.
+// It sends nothing while a submission under the nonce from this client is in
+// flight. An unsigned transaction (did empty) records nothing.
 func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, body []byte) error {
 	if did == "" {
 		_, _, err := c.postTx(ctx, body, did, nonce)
 		return err
 	}
-	c.nonces.begin(did, nonce)
+	if err := c.nonces.begin(did, nonce, nil); err != nil {
+		return fmt.Errorf("nonce %d of %s: %w, so the transaction wasn't sent", nonce, did, err)
+	}
 	outcome := nonceFree
 	digest := writeDigest(body)
 	defer func() { c.nonces.settle(did, nonce, outcome, digest) }()
