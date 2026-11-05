@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/big"
+	"math/bits"
 	"strings"
 )
 
@@ -24,21 +25,53 @@ func NewUint128(v uint64) Uint128 {
 // Uint128FromBig returns v as a Uint128, refusing a negative value or one of
 // more than 128 bits.
 func Uint128FromBig(v *big.Int) (Uint128, error) {
-	if v == nil || v.Sign() < 0 || v.BitLen() > 128 {
-		return Uint128{}, fmt.Errorf("%v is not a u128", v)
+	switch {
+	case v == nil:
+		return Uint128{}, fmt.Errorf("nil is not a u128")
+	case v.Sign() < 0:
+		return Uint128{}, fmt.Errorf("a negative number is not a u128")
+	case v.BitLen() > 128:
+		return Uint128{}, fmt.Errorf("a %d-bit number is not a u128", v.BitLen())
 	}
 	lo := new(big.Int).And(v, new(big.Int).SetUint64(^uint64(0)))
 	hi := new(big.Int).Rsh(v, 64)
 	return Uint128{Hi: hi.Uint64(), Lo: lo.Uint64()}, nil
 }
 
-// ParseUint128 reads a u128 written in decimal digits.
+// maxUint128Digits is how many decimal digits the largest u128,
+// 340282366920938463463374607431768211455, has.
+const maxUint128Digits = 39
+
+// ParseUint128 reads a u128 written in decimal digits (ASCII 0-9, leading
+// zeros allowed). It refuses a number of more than 39 digits after its leading
+// zeros before reading any of it, and reads the rest into two 64-bit halves,
+// so a long input costs one pass over it. The error doesn't repeat a long
+// input.
 func ParseUint128(s string) (Uint128, error) {
-	if s == "" || strings.Trim(s, "0123456789") != "" {
+	digits := strings.TrimLeft(s, "0")
+	if s == "" || strings.Trim(digits, "0123456789") != "" {
+		if len(s) > 64 {
+			return Uint128{}, fmt.Errorf("a %d-byte string is not an unsigned decimal integer", len(s))
+		}
 		return Uint128{}, fmt.Errorf("%q is not an unsigned decimal integer", s)
 	}
-	v, _ := new(big.Int).SetString(s, 10)
-	return Uint128FromBig(v)
+	if len(digits) > maxUint128Digits {
+		return Uint128{}, fmt.Errorf("a number of %d digits is not a u128 (at most %d)", len(digits), maxUint128Digits)
+	}
+	var u Uint128
+	for i := 0; i < len(digits); i++ {
+		// u = u*10 + digit, refusing a carry out of the high half.
+		hiCarry, hi := bits.Mul64(u.Hi, 10)
+		loCarry, lo := bits.Mul64(u.Lo, 10)
+		hi, c1 := bits.Add64(hi, loCarry, 0)
+		lo, c2 := bits.Add64(lo, uint64(digits[i]-'0'), 0)
+		hi, c3 := bits.Add64(hi, 0, c2)
+		if hiCarry != 0 || c1 != 0 || c3 != 0 {
+			return Uint128{}, fmt.Errorf("%s is more than a u128 holds", digits)
+		}
+		u = Uint128{Hi: hi, Lo: lo}
+	}
+	return u, nil
 }
 
 // Big returns the value as a big.Int.

@@ -2,6 +2,9 @@ package consensus
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/big"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -66,6 +69,43 @@ func TestUint128IsExact(t *testing.T) {
 	}
 	if NewUint128(5).appendLittleEndian(nil)[0] != 5 || len(NewUint128(5).appendLittleEndian(nil)) != 16 {
 		t.Fatal("u128 is not 16 little-endian bytes")
+	}
+}
+
+// A u128 has at most 39 digits after its leading zeros. A longer number is
+// refused before any big-number work (a decimal parse of n digits takes time
+// quadratic in n), allocating next to nothing, and the error doesn't repeat
+// it.
+func TestUint128RefusesALongNumberCheaply(t *testing.T) {
+	max := "340282366920938463463374607431768211455"
+	if u, err := ParseUint128(strings.Repeat("0", 1000) + max); err != nil || u.String() != max {
+		t.Fatalf("the largest u128 after 1,000 zeros: %v, %v", u, err)
+	}
+	long := strings.Repeat("9", 1<<20)
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := ParseUint128(long)
+	runtime.ReadMemStats(&after)
+	if err == nil {
+		t.Fatal("a 1,048,576-digit number parsed as a u128")
+	}
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > 64<<10 {
+		t.Errorf("refusing a 1,048,576-digit number allocated %d bytes", allocated)
+	}
+	if len(err.Error()) > 200 {
+		t.Errorf("the error repeats the number: %d bytes", len(err.Error()))
+	}
+	var fromJSON Uint128
+	if err := json.Unmarshal([]byte(long), &fromJSON); err == nil || len(err.Error()) > 200 {
+		t.Errorf("a 1,048,576-digit JSON number: %d-byte error (%v)", len(fmt.Sprint(err)), err == nil)
+	}
+	if _, err := Uint128FromBig(new(big.Int).Lsh(big.NewInt(1), 1<<20)); err == nil || len(err.Error()) > 200 {
+		t.Errorf("Uint128FromBig(2^1048576): %d-byte error (%v)", len(fmt.Sprint(err)), err == nil)
+	}
+	for _, bad := range []string{"0x" + max, max + " ", "+" + max, "١٢٣"} {
+		if _, err := ParseUint128(bad); err == nil {
+			t.Errorf("%q parsed as a u128", bad)
+		}
 	}
 }
 
