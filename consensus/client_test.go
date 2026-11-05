@@ -84,6 +84,28 @@ func TestGetTxReportsOtherErrors(t *testing.T) {
 	}
 }
 
+// A result for another transaction than the one asked for, or that names no
+// hash, is an error, not that transaction's result.
+func TestGetTxRefusesAnotherTransactionsResult(t *testing.T) {
+	const asked = "AB01CD02EF03AB01CD02EF03AB01CD02EF03AB01CD02EF03AB01CD02EF03AB01"
+	for name, hash := range map[string]string{
+		"another hash":         strings.Repeat("CD", 32),
+		"a hash 1 byte longer": asked + "00",
+		"no hash":              "",
+		"a hash not in hex":    strings.Repeat("ZZ", 32),
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"hash":"` + hash + `","height":"42","index":0,` +
+				`"tx_result":{"code":0,"log":"","gas_used":"1","gas_wanted":"1","data":null},"tx":"AAE="}}`))
+		}))
+		result, err := NewClient(ClientConfig{RPCURL: srv.URL}).GetTx(context.Background(), asked)
+		srv.Close()
+		if err == nil {
+			t.Errorf("%s: %+v; want an error", name, result)
+		}
+	}
+}
+
 // A config that leaves Timeout 0 gets DefaultClientConfig's timeout, not
 // none; a timeout the config gives is kept.
 func TestNewClientDefaultsTheTimeout(t *testing.T) {

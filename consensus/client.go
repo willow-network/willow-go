@@ -140,7 +140,9 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 // transaction the node hasn't indexed (not in a block yet, or never) is a
 // TxResult with Status TransactionStatusNotFound; one in a block has its
 // Height and its block result's Code and Log (Code 0 is applied; a refusal's
-// Log ends "(nonce N spent)" when the refusal used its nonce).
+// Log ends "(nonce N spent)" when the refusal used its nonce). An answer whose
+// hash isn't the one asked for is an error. The result is the RPC node's
+// word: nothing in its answer is verified against the chain.
 func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	raw, err := txHashBytes(hash)
 	if err != nil {
@@ -188,6 +190,9 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 
 	if err := json.Unmarshal(resp.Result, &txResp); err != nil {
 		return nil, fmt.Errorf("failed to parse transaction: %w", err)
+	}
+	if answered, err := txHashBytes(txResp.Hash); err != nil || !bytes.Equal(answered, raw) {
+		return nil, fmt.Errorf("the RPC answered for transaction %.80q, not %s", txResp.Hash, hash)
 	}
 
 	result := &TxResult{
