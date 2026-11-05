@@ -115,8 +115,10 @@ func parseMatchedLogs(body []byte) ([]Log, error) {
 //
 // The commitment is the RPC node's answer, which the SDK trusts: the node
 // answers this query with no proof, so nothing binds it to a verified header.
-// An answer about another subgrove or block than the one asked for is an
-// error.
+// The RPC node is the one WithRPCURL names; without it, the API URL with its
+// :3031 replaced by :26657 (the API's host), or, when the API URL has no
+// :3031, the API URL itself (see RPCEndpoint). An answer about another
+// subgrove or block than the one asked for is an error.
 func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, blockNumber uint64) ([32]byte, error) {
 	var out [32]byte
 
@@ -257,7 +259,9 @@ func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockN
 // returns true only when the served event set is exactly the filter-matched
 // set the commitment binds. The commitment is the RPC node's answer, which the
 // SDK trusts (see FetchEventsCommitment): the check removes trust in the
-// indexer, not in that node.
+// indexer, not in that node. Without WithRPCURL that node is the API's host
+// (the API URL with :3031 replaced by :26657), or the API itself when its URL
+// has no :3031, so the check then trusts the API's operator.
 //
 // An error is returned when either fetch fails or the block is not verifiable
 // (no on-chain anchor, or the indexer retained no matched logs). A non-nil

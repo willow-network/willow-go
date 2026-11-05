@@ -552,7 +552,10 @@ endpoints the light client took it from, not verified against the validators.
 - Block completeness: `VerifyBlockCompleteness` re-hashes an indexer's
   matched logs and compares them with the block's events commitment. It
   doesn't trust the indexer, but it trusts the RPC node it reads the
-  commitment from: that ABCI answer carries no proof. An answer for another
+  commitment from: that ABCI answer carries no proof. That node is the one
+  `WithRPCURL` names; without it, it is the API's host (the API URL with
+  `:3031` replaced by `:26657`), or the API URL itself when it has no
+  `:3031`, so the check trusts the API's operator. An answer for another
   subgrove or block than the one asked for is an error.
 - Ethereum state reads (`EthOperations`): the indexer's answer carries the
   block's state root and MPT proofs of the account and slot values under it.
