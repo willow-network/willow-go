@@ -492,6 +492,58 @@ func TestErc20BalanceNeedsAContract(t *testing.T) {
 	}
 }
 
+// A proof node whose RLP length doesn't fit in the node, however large, is
+// refused, in every read that walks it: a length of eight 0xff bytes, or one
+// past the largest int, must not wrap around and pass the bounds check. The
+// node is the proof's only one, under a state root that is its hash.
+func TestEthReadsRefuseAnRlpLengthPastTheNode(t *testing.T) {
+	ctx := context.Background()
+	token := bytes.Repeat([]byte{0x11}, 20)
+	holder := bytes.Repeat([]byte{0x22}, 20)
+	tokenHex := "0x" + hex.EncodeToString(token)
+	holderHex := "0x" + hex.EncodeToString(holder)
+	slot := mappingSlotForAddress(holder, 0)
+	allOnes := bytes.Repeat([]byte{0xff}, 8)
+	maxInt := append([]byte{0x7f}, bytes.Repeat([]byte{0xff}, 7)...)
+	cat := func(parts ...[]byte) []byte { return bytes.Join(parts, nil) }
+	nodes := map[string][]byte{
+		"a list of length 2^64-1":     cat([]byte{0xff}, allOnes, []byte{0x00}),
+		"a list of length 2^63-1":     cat([]byte{0xff}, maxInt, []byte{0x00}),
+		"a string of length 2^64-1":   cat([]byte{0xca, 0xbf}, allOnes, []byte{0x00}),
+		"a string of length 2^63-1":   cat([]byte{0xca, 0xbf}, maxInt, []byte{0x00}),
+		"a list one byte past":        cat([]byte{0xf8, 0x39}, bytes.Repeat([]byte{0x01}, 56)),
+		"a string one byte past":      cat([]byte{0xf8, 0x39, 0xb8, 0x38}, bytes.Repeat([]byte{0x01}, 55)),
+		"a list's length cut short":   {0xf9, 0x01},
+		"a string's length cut short": {0xc2, 0xb9, 0x01},
+	}
+	for name, node := range nodes {
+		proof := oneSlotProof(token, slot, 42, 9)
+		proof.StateRoot = toInts(keccak256(node))
+		proof.AccountProof.ProofNodes = [][]int{toInts(node)}
+		eth, _ := ethServer(t, &wireEnvelope{Answer: "AQI", StateRoot: proof.StateRoot, BlockRange: [2]uint64{9, 9}, StateProofs: []wireStateProof{proof}})
+		reads := map[string]func() error{
+			"GetState": func() error {
+				_, err := eth.GetState(ctx, tokenHex, []string{"0x" + hex.EncodeToString(slot)}, 9)
+				return err
+			},
+			"Erc20Balance": func() error { _, err := eth.Erc20Balance(ctx, tokenHex, holderHex, 0, 9); return err },
+			"GetCall":      func() error { _, err := eth.GetCall(ctx, map[string]interface{}{}, 9); return err },
+		}
+		for read, call := range reads {
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Errorf("%s, %s: panicked: %v", name, read, r)
+					}
+				}()
+				if err := call(); err == nil || !contains(err.Error(), "rlp") {
+					t.Errorf("%s, %s: %v; want an RLP refusal", name, read, err)
+				}
+			}()
+		}
+	}
+}
+
 // The tests' tries are Ethereum's: testTrie gives the root of the secure-trie
 // vector "emptyValues" in Ethereum's trie tests, and its proofs walk.
 func TestTestTrieIsEthereums(t *testing.T) {

@@ -618,19 +618,16 @@ func rlpDecodeList(data []byte) ([][]byte, error) {
 	if first <= 0xf7 {
 		payloadStart = 1
 		payloadLen = int(first - 0xc0)
+		if payloadStart+payloadLen > len(data) {
+			return nil, errors.New("rlp: list payload truncated")
+		}
 	} else {
 		lenOfLen := int(first - 0xf7)
-		if 1+lenOfLen > len(data) {
-			return nil, errors.New("rlp: list length overflow")
+		var err error
+		if payloadLen, err = rlpLongLength(data, lenOfLen, "list"); err != nil {
+			return nil, err
 		}
 		payloadStart = 1 + lenOfLen
-		payloadLen = 0
-		for _, b := range data[1 : 1+lenOfLen] {
-			payloadLen = (payloadLen << 8) | int(b)
-		}
-	}
-	if payloadStart+payloadLen > len(data) {
-		return nil, errors.New("rlp: list payload truncated")
 	}
 	payload := data[payloadStart : payloadStart+payloadLen]
 	out := make([][]byte, 0, 17)
@@ -664,15 +661,9 @@ func rlpDecodeItem(data []byte) ([]byte, int, error) {
 		return data[1 : 1+l], 1 + l, nil
 	case first <= 0xbf:
 		lenOfLen := int(first - 0xb7)
-		if 1+lenOfLen > len(data) {
-			return nil, 0, errors.New("rlp: item length overflow")
-		}
-		l := 0
-		for _, b := range data[1 : 1+lenOfLen] {
-			l = (l << 8) | int(b)
-		}
-		if 1+lenOfLen+l > len(data) {
-			return nil, 0, errors.New("rlp: long item truncated")
+		l, err := rlpLongLength(data, lenOfLen, "item")
+		if err != nil {
+			return nil, 0, err
 		}
 		return data[1+lenOfLen : 1+lenOfLen+l], 1 + lenOfLen + l, nil
 	default:
@@ -680,6 +671,28 @@ func rlpDecodeItem(data []byte) ([]byte, int, error) {
 		// granularity we verify. Reject explicitly.
 		return nil, 0, errors.New("rlp: nested list not supported in MPT verifier")
 	}
+}
+
+// rlpLongLength reads the length of a long-form RLP list or string: the
+// lenOfLen (1 to 8) big-endian bytes after its first byte, data[0]. It reads
+// them as a uint64 and refuses a length longer than the bytes that follow
+// them, so the length fits in an int and the caller can slice
+// data[1+lenOfLen:1+lenOfLen+length]. what names the list or item.
+func rlpLongLength(data []byte, lenOfLen int, what string) (int, error) {
+	if lenOfLen < 1 || lenOfLen > 8 {
+		return 0, fmt.Errorf("rlp: %s length of %d bytes", what, lenOfLen)
+	}
+	if 1+lenOfLen > len(data) {
+		return 0, fmt.Errorf("rlp: %s length truncated", what)
+	}
+	var length uint64
+	for _, b := range data[1 : 1+lenOfLen] {
+		length = length<<8 | uint64(b)
+	}
+	if length > uint64(len(data)-1-lenOfLen) {
+		return 0, fmt.Errorf("rlp: %s of %d bytes truncated", what, length)
+	}
+	return int(length), nil
 }
 
 func rlpEncodeBytes(b []byte) []byte {
