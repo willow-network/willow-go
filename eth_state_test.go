@@ -544,6 +544,35 @@ func TestEthReadsRefuseAnRlpLengthPastTheNode(t *testing.T) {
 	}
 }
 
+// A balance and a storage value are Ethereum uint256s: an answer carrying one
+// longer than 32 bytes is refused in every mode, by every read, before it is
+// read as a number (a decimal rendering of a long one takes time superlinear in
+// its length).
+func TestEthReadsRefuseAValueOver32Bytes(t *testing.T) {
+	ctx := context.Background()
+	token := bytes.Repeat([]byte{0x11}, 20)
+	tokenHex := "0x" + hex.EncodeToString(token)
+	slot := make([]byte, 32)
+	long := toInts(append([]byte{1}, make([]byte, 32)...)) // 2^256, 33 bytes
+	for name, lengthen := range map[string]func(*wireStateProof){
+		"balance": func(p *wireStateProof) { p.AccountState.Balance = long },
+		"value":   func(p *wireStateProof) { p.StorageProofs[0].Value = long },
+	} {
+		proof := oneSlotProof(token, slot, 5, 9)
+		lengthen(&proof)
+		eth, _ := ethServer(t, &wireEnvelope{Answer: "AQI", StateRoot: proof.StateRoot, BlockRange: [2]uint64{9, 9}, StateProofs: []wireStateProof{proof}})
+		for _, mode := range []EthProofMode{EthWalkProofs, EthSkipProofs} {
+			eth.Mode = mode
+			if state, err := eth.GetState(ctx, tokenHex, []string{"0x0"}, 9); err == nil || !contains(err.Error(), "32 bytes") {
+				t.Errorf("GetState, a 33-byte %s (mode %d): %+v, %v", name, mode, state, err)
+			}
+			if call, err := eth.GetCall(ctx, map[string]interface{}{}, 9); err == nil || !contains(err.Error(), "32 bytes") {
+				t.Errorf("GetCall, a 33-byte %s (mode %d): %+v, %v", name, mode, call, err)
+			}
+		}
+	}
+}
+
 // The tests' tries are Ethereum's: testTrie gives the root of the secure-trie
 // vector "emptyValues" in Ethereum's trie tests, and its proofs walk.
 func TestTestTrieIsEthereums(t *testing.T) {

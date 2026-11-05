@@ -191,7 +191,8 @@ func NewEthOperations(indexerBaseURL string, httpClient *http.Client) *EthOperat
 // bytes of hex; each slot is up to 32 bytes of hex, read as a big-endian
 // number and sent as 32 bytes. It returns an error, rather than the answer,
 // when the answer's proof isn't for that address, block, and those slots in
-// that order, or, in EthWalkProofs mode, when a proof doesn't walk.
+// that order, or carries a balance or value longer than 32 bytes, or, in
+// EthWalkProofs mode, when a proof doesn't walk.
 func (e *EthOperations) GetState(
 	ctx context.Context,
 	address string,
@@ -237,9 +238,10 @@ func (e *EthOperations) GetState(
 // GetCall asks the indexer to run tx at blockNumber and returns the
 // ABI-encoded result it reports, with its state proofs for every account the
 // call touched (see EthOperations). No proof binds the result. It returns an
-// error, rather than the answer, when a state proof isn't for blockNumber or
-// isn't under the answer's state root, or, in EthWalkProofs mode, when a
-// proof doesn't walk or its address isn't 20 bytes or a slot 32 bytes.
+// error, rather than the answer, when a state proof isn't for blockNumber,
+// isn't under the answer's state root, or carries a balance or value longer
+// than 32 bytes, or, in EthWalkProofs mode, when a proof doesn't walk or its
+// address isn't 20 bytes or a slot 32 bytes.
 func (e *EthOperations) GetCall(
 	ctx context.Context,
 	tx map[string]interface{},
@@ -261,6 +263,9 @@ func (e *EthOperations) GetCall(
 		p := &envelope.StateProofs[i]
 		if p.BlockNumber != blockNumber {
 			return nil, fmt.Errorf("state proof %d is for block %d, not %d", i, p.BlockNumber, blockNumber)
+		}
+		if err := checkWords(p); err != nil {
+			return nil, fmt.Errorf("state proof %d: %w", i, err)
 		}
 		root, err := wireBytes(p.StateRoot, 32, fmt.Sprintf("state proof %d's state root", i))
 		if err != nil {
@@ -370,9 +375,28 @@ func wireBytes(ints []int, n int, what string) ([]byte, error) {
 	return b, nil
 }
 
+// checkWords refuses a state proof whose account balance or a storage value
+// is longer than 32 bytes: both are Ethereum uint256s, and a longer one would
+// be read into a number of any size.
+func checkWords(p *wireStateProof) error {
+	if len(p.AccountState.Balance) > 32 {
+		return fmt.Errorf("the proof's balance is %d bytes, more than a uint256's 32 bytes", len(p.AccountState.Balance))
+	}
+	for i, sp := range p.StorageProofs {
+		if len(sp.Value) > 32 {
+			return fmt.Errorf("storage proof %d's value is %d bytes, more than a uint256's 32 bytes", i, len(sp.Value))
+		}
+	}
+	return nil
+}
+
 // checkStateAnswer refuses a state proof that isn't for address at
-// blockNumber with exactly the storage slots keys, in order.
+// blockNumber with exactly the storage slots keys, in order, or whose balance
+// or a value is longer than 32 bytes.
 func checkStateAnswer(p *wireStateProof, address []byte, keys [][]byte, blockNumber uint64) error {
+	if err := checkWords(p); err != nil {
+		return err
+	}
 	got, err := wireBytes(p.Address, 20, "the proof's address")
 	if err != nil {
 		return err
