@@ -91,7 +91,12 @@ The HTTP clients the SDK makes time out after 30 s (`WithTimeout` sets the
 client's, which `Files` also uses with the storage node, and
 `consensus.ClientConfig.Timeout` the consensus client's), and the light
 client's after `lightclient.Config.RPCTimeout` (10 s by default); a client
-you pass (`WithHTTPClient`, `NewEthOperations`) is used as it is.
+you pass (`WithHTTPClient`, `NewEthOperations`) is used as it is, except that
+`Files` bounds each request it sends at 30 s when that client has no timeout.
+`Files` methods take no context; each has a `Context` variant
+(`UploadContext`, `DownloadContext`, `MetadataContext`, `ListContext`,
+`DeleteContext`, `UnregisterStorageNodeContext`) that stops when its context
+ends.
 
 ## Signed transactions
 

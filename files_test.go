@@ -2,6 +2,7 @@ package willow
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -309,6 +310,106 @@ func TestFileWritesReturnAWriteError(t *testing.T) {
 		s.queue(refuse("Subgrove not found: sg"))
 		if err := write(nonce); !errors.As(err, &werr) || werr.MayLand || werr.Nonce != nonce || errors.Is(err, ErrNonceUsed) {
 			t.Errorf("%s, refused: %v; want a WriteError for nonce %d that won't land", name, err, nonce)
+		}
+	}
+}
+
+// File operations sent with an HTTP client that has no timeout (a client
+// passed with WithHTTPClient) still time out, each request after
+// fileRequestTimeout, rather than hanging on an API or a storage node that
+// never answers.
+func TestFileOperationsTimeOutWithoutAClientTimeout(t *testing.T) {
+	defer func(d time.Duration) { fileRequestTimeout = d }(fileRequestTimeout)
+	fileRequestTimeout = 200 * time.Millisecond
+	data := []byte("willow")
+	manifest := fileManifest(data, DefaultChunkSize)
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(3 * time.Second):
+			_, _ = w.Write([]byte(`{"success":true,"data":{"tx_hash":"AB","code":0,"log":""}}`))
+		}
+	}))
+	t.Cleanup(stalled.Close)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		if r.URL.Path == "/files/sg/f" {
+			_ = json.NewEncoder(w).Encode(manifest)
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{"tx_hash":"AB","code":0,"log":""}}`))
+	}))
+	t.Cleanup(api.Close)
+	stalledAPI, err := NewClient(stalled.URL, WithHTTPClient(&http.Client{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answeringAPI, err := NewClient(api.URL, WithHTTPClient(&http.Client{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := vectorIdentity(t, Ed25519)
+	for name, call := range map[string]func() error{
+		"Metadata": func() error { _, err := stalledAPI.Files.Metadata("sg", "f"); return err },
+		"List":     func() error { _, err := stalledAPI.Files.List("sg"); return err },
+		"Upload's manifest": func() error {
+			_, err := stalledAPI.Files.Upload("sg", "f", "f.txt", data, api.URL, fileSigning(id, 1))
+			return err
+		},
+		"Delete":                func() error { return stalledAPI.Files.Delete("sg", "f", fileSigning(id, 2)) },
+		"UnregisterStorageNode": func() error { return stalledAPI.Files.UnregisterStorageNode(id.DID(), fileSigning(id, 3)) },
+		"Download's chunk":      func() error { _, err := answeringAPI.Files.Download("sg", "f", stalled.URL); return err },
+		"Upload's chunk": func() error {
+			_, err := answeringAPI.Files.Upload("sg", "f", "f.txt", data, stalled.URL, fileSigning(id, 4))
+			return err
+		},
+	} {
+		start := time.Now()
+		err := call()
+		if took := time.Since(start); err == nil || took > 2*time.Second {
+			t.Errorf("%s from a stalled server: %v after %v; want a timeout", name, err, took)
+		}
+	}
+
+	// The Context variants stop when their context ends, whatever the
+	// client's timeout.
+	fileRequestTimeout = time.Minute
+	stalledAPI, err = NewClient(stalled.URL, WithTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	answeringAPI, err = NewClient(api.URL, WithTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func(ctx context.Context) error{
+		"MetadataContext": func(ctx context.Context) error {
+			_, err := stalledAPI.Files.MetadataContext(ctx, "sg", "f")
+			return err
+		},
+		"ListContext": func(ctx context.Context) error { _, err := stalledAPI.Files.ListContext(ctx, "sg"); return err },
+		"UploadContext": func(ctx context.Context) error {
+			_, err := answeringAPI.Files.UploadContext(ctx, "sg", "f", "f.txt", data, stalled.URL, fileSigning(id, 5))
+			return err
+		},
+		"DeleteContext": func(ctx context.Context) error {
+			return stalledAPI.Files.DeleteContext(ctx, "sg", "f", fileSigning(id, 6))
+		},
+		"UnregisterStorageNodeContext": func(ctx context.Context) error {
+			return stalledAPI.Files.UnregisterStorageNodeContext(ctx, id.DID(), fileSigning(id, 7))
+		},
+		"DownloadContext": func(ctx context.Context) error {
+			_, err := answeringAPI.Files.DownloadContext(ctx, "sg", "f", stalled.URL)
+			return err
+		},
+	} {
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		start := time.Now()
+		err := call(ctx)
+		cancel()
+		if took := time.Since(start); err == nil || took > 2*time.Second {
+			t.Errorf("%s from a stalled server: %v after %v; want it stopped with its context", name, err, took)
 		}
 	}
 }
