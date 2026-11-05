@@ -22,6 +22,7 @@ type Client struct {
 	baseURL         *url.URL
 	indexerURL      *url.URL // Optional indexer node URL for GraphQL/SQL routing
 	rpcURL          *url.URL // Optional CometBFT JSON-RPC endpoint override (for ABCI queries)
+	apiKey          string   // The managed-tier API key (WithAPIKey)
 	identity        *Identity
 	identityMu      sync.RWMutex
 	retryConfig     RetryConfig
@@ -86,6 +87,21 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 		if err := opt(client); err != nil {
 			return nil, err
 		}
+	}
+	if client.apiKey != "" {
+		// A copy, so that a client the caller passed (WithHTTPClient) doesn't
+		// send the key elsewhere.
+		keyed := *client.httpClient
+		base := keyed.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		origins := map[string]bool{origin(client.baseURL): true}
+		if client.indexerURL != nil {
+			origins[origin(client.indexerURL)] = true
+		}
+		keyed.Transport = &apiKeyTransport{base: base, key: client.apiKey, origins: origins}
+		client.httpClient = &keyed
 	}
 
 	// Initialize sub-clients
@@ -172,35 +188,65 @@ func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	}
 }
 
-// apiKeyTransport wraps a base RoundTripper so every outbound request
-// carries the managed-tier `X-API-Key` header. The wrap is non-destructive:
-// the original request is cloned before the header is set, so the wrapped
-// transport is safe to share across goroutines and reuse with other clients.
+// apiKeyTransport wraps a base RoundTripper so that each request to one of
+// origins (the API's, and the indexer's named with WithIndexerURL) carries
+// the managed-tier `X-API-Key` header, and no other request does. It checks
+// every request, a redirect's included. The original request is cloned
+// before the header is set, so the transport is safe to share across
+// goroutines.
 type apiKeyTransport struct {
-	base http.RoundTripper
-	key  string
+	base    http.RoundTripper
+	key     string
+	origins map[string]bool
 }
 
 func (t *apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !t.origins[origin(req.URL)] {
+		if req.Header.Get("X-API-Key") == "" {
+			return t.base.RoundTrip(req)
+		}
+		req = req.Clone(req.Context())
+		req.Header.Del("X-API-Key")
+		return t.base.RoundTrip(req)
+	}
 	req2 := req.Clone(req.Context())
 	req2.Header.Set("X-API-Key", t.key)
 	return t.base.RoundTrip(req2)
 }
 
-// WithAPIKey configures the managed-tier API key. When set, the SDK sends
-// `X-API-Key: <key>` on every request. Mint a key at
+// origin is u's scheme, host, and port, a WebSocket scheme read as its HTTP
+// one and a default port made explicit.
+func origin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "ws":
+		scheme = "http"
+	case "wss":
+		scheme = "https"
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if scheme == "https" {
+			port = "443"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// WithAPIKey configures the managed-tier API key. Mint a key at
 // https://dashboard.willow.tech/account. Required for queries and writes
 // against managed api.willow.tech / indexer.willow.tech.
+//
+// The SDK sends `X-API-Key: <key>` only to the API URL's origin and to the
+// indexer URL's (WithIndexerURL), whatever the order of the options: never to
+// an indexer it discovers from the API's /indexers list, whose endpoint anyone
+// who registers an indexer chooses, nor to the RPC URL or a storage node. To
+// send the key to an indexer, name it with WithIndexerURL. A client passed
+// with WithHTTPClient isn't changed: the SDK uses a copy that carries the key.
 func WithAPIKey(key string) ClientOption {
 	return func(c *Client) error {
-		if key == "" {
-			return nil
-		}
-		base := c.httpClient.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		c.httpClient.Transport = &apiKeyTransport{base: base, key: key}
+		c.apiKey = key
 		return nil
 	}
 }

@@ -296,6 +296,13 @@ client, err := willow.Builder("http://localhost:3031").
     Build()
 ```
 
+`WithAPIKey` sets the managed tier's key. The client sends it (as
+`X-API-Key`) only to the API URL and to the indexer named with
+`WithIndexerURL`: never to an indexer it discovers from the API's
+`/indexers` list, whose endpoint whoever registered it chooses, nor to the RPC
+URL or a storage node. To send the key to an indexer, name it with
+`WithIndexerURL`.
+
 ### Identity Management
 
 ```go
