@@ -65,9 +65,14 @@ counts the JSON in an answer before decoding it, and refuses one that holds
 more than 2,097,152 units (each string, number, `true`, `false`, or `null`
 costs one, and each array or object eight) or nests deeper than 512 levels.
 Measured, an answer under that limit decodes to at most about 80 MiB besides
-the bytes of its strings. Honest answers hold far fewer: a SQL answer of
-100,000 rows of 10 columns is under 1.9 million. The byte limits, by route,
-hold the largest answer the node serves where the node bounds it:
+the bytes of its strings. Numbers in a SQL or GraphQL answer's top-level proof
+don't count (an indexer sends a proof of every row, whose bytes are JSON numbers
+the SDK decodes into bytes or skips), nor do numbers in an `EthOperations` answer,
+which decodes into typed fields: those are bounded by the byte limit. A SQL
+answer of tens of thousands of rows with its proofs is within the limit. A
+historical answer's data, bytes as JSON numbers decoded into `interface{}`, reaches
+it at about 2 MB of those bytes. The byte limits, by route, hold the largest answer
+the node serves where the node bounds it:
 
 - 4 MiB: answers of fixed shape or short lists: nonces, balances, token
   info, fees, validators, indexers, health, `/tx/submit`, DID documents and
@@ -95,7 +100,8 @@ carries. Read one entry at a time instead of a list (`GetSubgrove`,
 `GetIndexer`, `Validators.Get`), and make a call touch less. An answer
 refused for its size, past its byte limit or the JSON limit, is an error
 that matches `willow.ErrAnswerTooLarge` (`errors.Is`), in every package of
-the SDK.
+the SDK. A routed query under `QuerySourceAuto` returns that error rather than
+falling back to the API, which serves no indexed rows.
 
 The HTTP clients the SDK makes time out after 30 s (`WithTimeout` sets the
 client's, which `Files` also uses with the storage node, and

@@ -120,9 +120,12 @@ func (c *capped) Read(p []byte) (int, error) {
 const (
 	// MaxValues is the most JSON the SDK decodes of one answer, in units:
 	// each string, number, true, false, or null costs one, and each array or
-	// object ContainerCost. An honest answer holds far fewer: a page of 100
-	// documents of 10 fields is under 3,000, and a SQL answer of 100,000 rows
-	// of 10 columns under 1.9 million.
+	// object ContainerCost. An honest answer holds fewer: a page of 100
+	// documents of 10 fields is under 3,000, and a SQL answer of tens of
+	// thousands of rows, with an indexer's proof of each, under the limit
+	// (the numbers in those proofs don't count: see CheckJSONWithProof). An
+	// answer that carries its bytes as JSON numbers decoded into interface{}
+	// (a historical answer's data) reaches it at about 2 MB of those bytes.
 	MaxValues = 1 << 21
 	// ContainerCost is what an array or object costs: decoded, one takes
 	// several times what a number or a short string takes (a map, about 340
@@ -159,19 +162,54 @@ func (e *TooMuchJSONError) Is(target error) bool {
 // reads data once and allocates nothing. It doesn't validate data: JSON that
 // isn't valid passes, and the decoder refuses it.
 func CheckJSON(data []byte) error {
-	return checkJSON(data, MaxValues, MaxDepth)
+	return scanJSON(data, MaxValues, MaxDepth, everyNumber)
 }
 
+// CheckJSONWithProof is CheckJSON for an answer the SDK decodes into a type
+// whose top-level "proof" holds bytes, not interface{} values (a SQL or GraphQL
+// answer, which an indexer sends with a proof of every row): a number under
+// that proof costs nothing, since decoded it takes at most a byte, or nothing
+// when the SDK skips the field. Its strings and containers still count, as
+// does every number elsewhere.
+func CheckJSONWithProof(data []byte) error {
+	return scanJSON(data, MaxValues, MaxDepth, notUnderProof)
+}
+
+// checkJSON is CheckJSON at the given limits.
 func checkJSON(data []byte, maxValues, maxDepth int) error {
+	return scanJSON(data, maxValues, maxDepth, everyNumber)
+}
+
+// numberCost says which numbers in an answer cost a unit.
+type numberCost int
+
+const (
+	// everyNumber: the answer may be decoded into interface{} values, where
+	// a number takes tens of bytes.
+	everyNumber numberCost = iota
+	// notUnderProof: see CheckJSONWithProof.
+	notUnderProof
+	// noNumber: the answer is decoded into typed fields only, where a number
+	// takes at most 8 bytes, so the route's byte cap bounds them. See
+	// UnmarshalTyped.
+	noNumber
+)
+
+func scanJSON(data []byte, maxValues, maxDepth int, numbers numberCost) error {
 	units, depth := 0, 0
+	underProof := false
 	for i := 0; i < len(data); i++ {
 		switch c := data[i]; {
 		case c == '"':
 			units++
+			start := i + 1
 			for i++; i < len(data) && data[i] != '"'; i++ {
 				if data[i] == '\\' {
 					i++
 				}
+			}
+			if numbers == notUnderProof && depth == 1 && i <= len(data) && string(data[start:min(i, len(data))]) == "proof" {
+				underProof = opensContainerAfterColon(data, i+1)
 			}
 		case c == '[' || c == '{':
 			units += ContainerCost
@@ -179,9 +217,18 @@ func checkJSON(data []byte, maxValues, maxDepth int) error {
 				return &TooMuchJSONError{Depth: true}
 			}
 		case c == ']' || c == '}':
-			depth--
-		case c == '-' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z':
-			// A number, true, false, or null: skip to its end.
+			if depth--; depth <= 1 {
+				underProof = false
+			}
+		case c == '-' || c >= '0' && c <= '9':
+			if numbers == everyNumber || numbers == notUnderProof && !underProof {
+				units++
+			}
+			for i+1 < len(data) && isScalarByte(data[i+1]) {
+				i++
+			}
+		case c >= 'a' && c <= 'z':
+			// true, false, or null: skip to its end.
 			units++
 			for i+1 < len(data) && isScalarByte(data[i+1]) {
 				i++
@@ -194,6 +241,23 @@ func checkJSON(data []byte, maxValues, maxDepth int) error {
 	return nil
 }
 
+// opensContainerAfterColon reports whether data at i is a colon and then an
+// array or object, whitespace aside: a key whose value is a container.
+func opensContainerAfterColon(data []byte, i int) bool {
+	skip := func() {
+		for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\n' || data[i] == '\r') {
+			i++
+		}
+	}
+	skip()
+	if i >= len(data) || data[i] != ':' {
+		return false
+	}
+	i++
+	skip()
+	return i < len(data) && (data[i] == '[' || data[i] == '{')
+}
+
 func isScalarByte(c byte) bool {
 	return c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c == '.' || c == '+' || c == '-'
 }
@@ -202,6 +266,29 @@ func isScalarByte(c byte) bool {
 // than the SDK decodes (see CheckJSON).
 func Unmarshal(data []byte, v any) error {
 	if err := CheckJSON(data); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+// UnmarshalTyped decodes data into v, whose types hold no interface{} values,
+// so that a number takes at most 8 bytes: numbers don't count against what the
+// SDK decodes (see CheckJSON), and the route's byte cap bounds them.
+func UnmarshalTyped(data []byte, v any) error {
+	if err := scanJSON(data, MaxValues, MaxDepth, noNumber); err != nil {
+		return err
+	}
+	return json.Unmarshal(data, v)
+}
+
+// DecodeWithProof reads r under limit (see ReadAll) and decodes it into v,
+// counting what it holds as CheckJSONWithProof does.
+func DecodeWithProof(r io.Reader, limit int64, v any) error {
+	data, err := ReadAll(r, limit)
+	if err != nil {
+		return err
+	}
+	if err := CheckJSONWithProof(data); err != nil {
 		return err
 	}
 	return json.Unmarshal(data, v)

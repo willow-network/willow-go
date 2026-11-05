@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -78,7 +79,7 @@ func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID str
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
-	if err := httpbody.Decode(resp.Body, httpbody.Large, &response); err != nil {
+	if err := httpbody.DecodeWithProof(resp.Body, httpbody.Large, &response); err != nil {
 		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
 	return &response, nil
@@ -286,6 +287,11 @@ func routeQuery[T any](
 					IndexerDID: info.IndexerDID,
 				}, nil
 			}
+			// A size refusal is the answer: the API serves no indexed rows, so
+			// falling back would report none, with no error.
+			if errors.Is(err, ErrAnswerTooLarge) {
+				return nil, err
+			}
 			// continue to next indexer / fall back to validator
 		}
 		result, err := callValidator()
@@ -303,11 +309,11 @@ func routeQuery[T any](
 // unwrapResponse reads a routed query's answer: T in the API's {success,
 // data, error} envelope, or T alone (an indexer's answer, and the API's SQL
 // and GraphQL answers). It refuses an answer that holds more JSON than the
-// SDK decodes (see httpbody.CheckJSON) and decodes T once. An envelope that
+// SDK decodes (see httpbody.CheckJSONWithProof) and decodes T once. An envelope that
 // reports a failure, or carries no data, is an error.
 func unwrapResponse[T any](raw []byte) (T, error) {
 	var zero T
-	if err := httpbody.CheckJSON(raw); err != nil {
+	if err := httpbody.CheckJSONWithProof(raw); err != nil {
 		return zero, err
 	}
 	// Whether it is an envelope; the probe decodes nothing else.
@@ -339,7 +345,8 @@ func unwrapResponse[T any](raw []byte) (T, error) {
 }
 
 // SqlQuery executes a SQL query against a subgrove and returns the answer
-// (and, with includeProof, its proof) unverified.
+// (and, with includeProof, its proof) unverified. An indexer attaches a proof
+// of every row whatever includeProof says.
 // When an indexer URL is configured, the query is routed there.
 func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query string, includeProof bool) (*SqlResponse, error) {
 	req := SqlRequest{
@@ -377,7 +384,7 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 	}
 
 	var result SqlResponse
-	if err := httpbody.Decode(resp.Body, httpbody.Large, &result); err != nil {
+	if err := httpbody.DecodeWithProof(resp.Body, httpbody.Large, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode SQL response: %w", err)
 	}
 
