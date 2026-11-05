@@ -40,7 +40,29 @@ const (
 	opChild                              = 0x11
 	opParentInverted                     = 0x12
 	opChildInverted                      = 0x13
+
+	// Large-value op codes: the same layout as the op they mirror, but the
+	// value length is a big-endian u32. The Willow GroveDB fork
+	// (willow-network/grovedb, branch willow/v3.1.0-proof-fixes; upstream
+	// dashpay/grovedb 86562f65) writes them for any value of 64 KiB or more,
+	// which grovedb 3.1.0's u16 length cannot express. 0x23 and 0x2b mirror
+	// the KVValueHashFeatureType ops, which this decoder does not decode
+	// (query proofs don't carry them).
+	opPushKVLarge                     = 0x20
+	opPushKVValueHashLarge            = 0x21
+	opPushKVRefValueHashLarge         = 0x22
+	opPushInvertedKVLarge             = 0x28
+	opPushInvertedKVValueHashLarge    = 0x29
+	opPushInvertedKVRefValueHashLarge = 0x2a
 )
+
+// LargeValueThreshold is the shortest value a large-value op carries; a
+// shorter value has exactly one encoding, the 3.1.0 op with a u16 length.
+const LargeValueThreshold = 65536
+
+// MaxValueLen is the longest value a large-value op may declare (64 MiB, as
+// the prover's decoder).
+const MaxValueLen = 64 * 1024 * 1024
 
 // Tree represents a node in the Merk AVL tree.
 type Tree struct {
@@ -176,13 +198,13 @@ func (d *MerkDecoder) Next() (*MerkOp, error) {
 		}
 		return &MerkOp{Type: OpPush, Node: node}, nil
 	case opPushKV:
-		node, err := d.decodeKV()
+		node, err := d.decodeKV(false)
 		if err != nil {
 			return nil, err
 		}
 		return &MerkOp{Type: OpPush, Node: node}, nil
 	case opPushKVValueHash:
-		node, err := d.decodeKVValueHash()
+		node, err := d.decodeKVValueHash(false)
 		if err != nil {
 			return nil, err
 		}
@@ -194,7 +216,7 @@ func (d *MerkDecoder) Next() (*MerkOp, error) {
 		}
 		return &MerkOp{Type: OpPush, Node: node}, nil
 	case opPushKVRefValueHash:
-		node, err := d.decodeKVRefValueHash()
+		node, err := d.decodeKVRefValueHash(false)
 		if err != nil {
 			return nil, err
 		}
@@ -214,13 +236,13 @@ func (d *MerkDecoder) Next() (*MerkOp, error) {
 		}
 		return &MerkOp{Type: OpPushInverted, Node: node}, nil
 	case opPushInvertedKV:
-		node, err := d.decodeKV()
+		node, err := d.decodeKV(false)
 		if err != nil {
 			return nil, err
 		}
 		return &MerkOp{Type: OpPushInverted, Node: node}, nil
 	case opPushInvertedKVValueHash:
-		node, err := d.decodeKVValueHash()
+		node, err := d.decodeKVValueHash(false)
 		if err != nil {
 			return nil, err
 		}
@@ -232,11 +254,33 @@ func (d *MerkDecoder) Next() (*MerkOp, error) {
 		}
 		return &MerkOp{Type: OpPushInverted, Node: node}, nil
 	case opPushInvertedKVRefValueHash:
-		node, err := d.decodeKVRefValueHash()
+		node, err := d.decodeKVRefValueHash(false)
 		if err != nil {
 			return nil, err
 		}
 		return &MerkOp{Type: OpPushInverted, Node: node}, nil
+
+	// Large-value variants
+	case opPushKVLarge, opPushKVValueHashLarge, opPushKVRefValueHashLarge,
+		opPushInvertedKVLarge, opPushInvertedKVValueHashLarge, opPushInvertedKVRefValueHashLarge:
+		var node *MerkNode
+		var err error
+		switch opCode {
+		case opPushKVLarge, opPushInvertedKVLarge:
+			node, err = d.decodeKV(true)
+		case opPushKVValueHashLarge, opPushInvertedKVValueHashLarge:
+			node, err = d.decodeKVValueHash(true)
+		default:
+			node, err = d.decodeKVRefValueHash(true)
+		}
+		if err != nil {
+			return nil, err
+		}
+		opType := OpPush
+		if opCode >= opPushInvertedKVLarge {
+			opType = OpPushInverted
+		}
+		return &MerkOp{Type: opType, Node: node}, nil
 
 	// Tree operations
 	case opParent:
@@ -269,7 +313,7 @@ func (d *MerkDecoder) decodeKVHash() (*MerkNode, error) {
 	return &MerkNode{Type: NodeKVHash, KVHashVal: HashFromBytes(hash)}, nil
 }
 
-func (d *MerkDecoder) decodeKV() (*MerkNode, error) {
+func (d *MerkDecoder) decodeKV(large bool) (*MerkNode, error) {
 	if d.offset >= len(d.data) {
 		return nil, NewVerificationError("unexpected end of data reading key length")
 	}
@@ -281,12 +325,12 @@ func (d *MerkDecoder) decodeKV() (*MerkNode, error) {
 		return nil, err
 	}
 
-	valueLen, err := d.readU16()
+	valueLen, err := d.readValueLen(large)
 	if err != nil {
 		return nil, err
 	}
 
-	value, err := d.readBytes(int(valueLen))
+	value, err := d.readBytes(valueLen)
 	if err != nil {
 		return nil, err
 	}
@@ -294,7 +338,7 @@ func (d *MerkDecoder) decodeKV() (*MerkNode, error) {
 	return &MerkNode{Type: NodeKV, Key: key, Value: value}, nil
 }
 
-func (d *MerkDecoder) decodeKVValueHash() (*MerkNode, error) {
+func (d *MerkDecoder) decodeKVValueHash(large bool) (*MerkNode, error) {
 	if d.offset >= len(d.data) {
 		return nil, NewVerificationError("unexpected end of data reading key length")
 	}
@@ -306,12 +350,12 @@ func (d *MerkDecoder) decodeKVValueHash() (*MerkNode, error) {
 		return nil, err
 	}
 
-	valueLen, err := d.readU16()
+	valueLen, err := d.readValueLen(large)
 	if err != nil {
 		return nil, err
 	}
 
-	value, err := d.readBytes(int(valueLen))
+	value, err := d.readBytes(valueLen)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +397,7 @@ func (d *MerkDecoder) decodeKVDigest() (*MerkNode, error) {
 	}, nil
 }
 
-func (d *MerkDecoder) decodeKVRefValueHash() (*MerkNode, error) {
+func (d *MerkDecoder) decodeKVRefValueHash(large bool) (*MerkNode, error) {
 	if d.offset >= len(d.data) {
 		return nil, NewVerificationError("unexpected end of data reading key length")
 	}
@@ -365,12 +409,12 @@ func (d *MerkDecoder) decodeKVRefValueHash() (*MerkNode, error) {
 		return nil, err
 	}
 
-	valueLen, err := d.readU16()
+	valueLen, err := d.readValueLen(large)
 	if err != nil {
 		return nil, err
 	}
 
-	value, err := d.readBytes(int(valueLen))
+	value, err := d.readBytes(valueLen)
 	if err != nil {
 		return nil, err
 	}
@@ -396,6 +440,31 @@ func (d *MerkDecoder) readU16() (uint16, error) {
 	value := uint16(d.data[d.offset])<<8 | uint16(d.data[d.offset+1])
 	d.offset += 2
 	return value, nil
+}
+
+// readValueLen reads a value length: a big-endian u16 for the 3.1.0 ops, a
+// big-endian u32 for the large-value ops, which must carry at least
+// LargeValueThreshold and at most MaxValueLen bytes.
+func (d *MerkDecoder) readValueLen(large bool) (int, error) {
+	if !large {
+		v, err := d.readU16()
+		return int(v), err
+	}
+	if d.offset+4 > len(d.data) {
+		return 0, NewVerificationError("unexpected end of data reading u32")
+	}
+	v := uint32(d.data[d.offset])<<24 | uint32(d.data[d.offset+1])<<16 |
+		uint32(d.data[d.offset+2])<<8 | uint32(d.data[d.offset+3])
+	d.offset += 4
+	if v < LargeValueThreshold {
+		return 0, NewVerificationError(fmt.Sprintf(
+			"large-value op with a %d-byte value (must be at least %d)", v, LargeValueThreshold))
+	}
+	if v > MaxValueLen {
+		return 0, NewVerificationError(fmt.Sprintf(
+			"large-value op with a %d-byte value (limit %d)", v, MaxValueLen))
+	}
+	return int(v), nil
 }
 
 func (d *MerkDecoder) readBytes(n int) ([]byte, error) {
