@@ -692,21 +692,27 @@ func usedNonceError(err error, why string) error {
 }
 
 // submitSigned submits a transaction did signed under nonce, a nonce the
-// caller chose, returning its hash, and records the outcome, so that this
-// client's own writes skip the nonce while it is in flight and as long as its
-// outcome holds it. It sends nothing while a submission under the nonce from
-// this client is in flight. An unsigned transaction (did empty) records
-// nothing.
-func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, body []byte) (txHash string, err error) {
-	if did == "" {
-		txHash, _, err = c.postTx(ctx, body, did, nonce)
-		return txHash, err
-	}
+// caller chose (a file write's), returning its hash, and records the outcome,
+// so that this client's own writes skip the nonce while it is in flight and as
+// long as its outcome holds it. It sends nothing while a submission under the
+// nonce from this client is in flight. A failure is a *WriteError naming the
+// nonce: MayLand when the submission may have reached the node, and wrapping
+// ErrNonceUsed when the answer says the nonce is used.
+func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, body []byte) (string, error) {
 	if err := c.nonces.begin(did, nonce, nil); err != nil {
-		return "", fmt.Errorf("nonce %d of %s: %w, so the transaction wasn't sent", nonce, did, err)
+		return "", &WriteError{DID: did, Nonce: nonce, Err: fmt.Errorf(
+			"%w, so the transaction wasn't sent: send it under nonce %d once that submission returns", err, nonce)}
 	}
 	outcome := nonceFree
 	defer func() { c.nonces.settle(did, nonce, outcome) }()
-	txHash, outcome, err = c.postTx(ctx, body, did, nonce)
-	return txHash, err
+	txHash, outcome, err := c.postTx(ctx, body, did, nonce)
+	if err == nil {
+		return txHash, nil
+	}
+	werr := &WriteError{DID: did, Nonce: nonce, MayLand: outcome == nonceUnknown, Err: err}
+	if outcome == nonceUsed {
+		return "", usedNonceError(werr, "if an earlier attempt of this write was sent under it, or this one was "+
+			"forwarded, it landed: read what it wrote before sending the write again under a fresh nonce")
+	}
+	return "", werr
 }

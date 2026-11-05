@@ -205,6 +205,10 @@ if errors.As(err, &werr) && werr.MayLand {
 }
 ```
 
+File writes (`Files.Upload`, `Delete`, and `UnregisterStorageNode`) return the
+same `*willow.WriteError`: send one with `MayLand` set again signed under the
+same `FileSigningOptions.Nonce`.
+
 Under `WithNonce` the client sends nothing if the chain already shows the
 nonce used, and doesn't sign the write again under another nonce if it is
 refused as used; either way the error wraps `willow.ErrNonceUsed`: the

@@ -271,3 +271,44 @@ func TestStorageNodeRequestsTimeOut(t *testing.T) {
 		}
 	}
 }
+
+// A file write whose submission fails in transit (a 5xx or a network error)
+// may still land: its error is a *WriteError with MayLand set, naming the
+// signer and the nonce, so it can be sent again under the same nonce. A
+// refusal of the nonce as used wraps ErrNonceUsed; another CheckTx refusal
+// is a *WriteError that won't land.
+func TestFileWritesReturnAWriteError(t *testing.T) {
+	s := newNonceServer(t, 0)
+	client := s.client(nil, false)
+	id := vectorIdentity(t, Ed25519)
+	writes := map[string]func(nonce uint64) error{
+		"Upload": func(nonce uint64) error {
+			_, err := client.Files.Upload("sg", "f", "f.txt", []byte("x"), "http://127.0.0.1:1", fileSigning(id, nonce))
+			return err
+		},
+		"Delete": func(nonce uint64) error { return client.Files.Delete("sg", "f", fileSigning(id, nonce)) },
+		"UnregisterStorageNode": func(nonce uint64) error {
+			return client.Files.UnregisterStorageNode(id.DID(), fileSigning(id, nonce))
+		},
+	}
+	nonce := uint64(0)
+	for name, write := range writes {
+		nonce++
+		s.queue(status(http.StatusBadGateway))
+		err := write(nonce)
+		var werr *WriteError
+		if !errors.As(err, &werr) || !werr.MayLand || werr.Nonce != nonce || werr.DID != id.DID() {
+			t.Errorf("%s, a 502: %v; want a WriteError for nonce %d that may land", name, err, nonce)
+		}
+		nonce++
+		s.queue(refuse("Invalid nonce: %d already used (replay)"))
+		if err := write(nonce); !errors.Is(err, ErrNonceUsed) || !errors.As(err, &werr) || werr.MayLand || werr.Nonce != nonce {
+			t.Errorf("%s, refused as used: %v; want ErrNonceUsed for nonce %d", name, err, nonce)
+		}
+		nonce++
+		s.queue(refuse("Subgrove not found: sg"))
+		if err := write(nonce); !errors.As(err, &werr) || werr.MayLand || werr.Nonce != nonce || errors.Is(err, ErrNonceUsed) {
+			t.Errorf("%s, refused: %v; want a WriteError for nonce %d that won't land", name, err, nonce)
+		}
+	}
+}

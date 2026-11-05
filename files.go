@@ -29,9 +29,16 @@ type FileSigningOptions struct {
 	// Nonce is the transaction's nonce, which the signed message binds. Take
 	// it with Client.NextNonce(ctx, OwnerDID), so that it is free in the
 	// account's window and no other write from the client takes it while this
-	// one is in flight. A write the chain refuses in its block after its
-	// signature and nonce verify still spends the nonce, so a retry then takes
-	// a fresh nonce and is signed anew.
+	// one is in flight.
+	//
+	// A write that fails to submit returns a *WriteError naming the nonce.
+	// With MayLand set, its submission may have reached the node and may
+	// still land: to send it again, sign it under the same Nonce, so that
+	// whichever attempt lands first uses the nonce and the other is refused.
+	// Signed under a fresh nonce instead, both attempts can run. Once the
+	// nonce is used (the write landed, applied or refused in its block, or
+	// its error wraps ErrNonceUsed), read what the write wrote before signing
+	// it again under a fresh nonce.
 	Nonce uint64
 }
 
@@ -67,10 +74,11 @@ type FileOperations struct {
 // chunks to the storage node. signing must name the owner (OwnerDID) and
 // carry a SignFunc: without them Upload sends nothing and returns a
 // validation error, as the chain refuses a manifest with no owner or
-// signature. Once the manifest's transaction is accepted, a chunk the storage
-// node doesn't store (an answer other than 2xx, or a failed request) stops
-// the upload with a *ChunkUploadError, which carries the manifest, its
-// transaction, and the chunk.
+// signature. A manifest that fails to submit returns a *WriteError (see
+// FileSigningOptions.Nonce). Once the manifest's transaction is accepted, a
+// chunk the storage node doesn't store (an answer other than 2xx, or a failed
+// request) stops the upload with a *ChunkUploadError, which carries the
+// manifest, its transaction, and the chunk.
 func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
 	if err := checkFileSigning("Upload", signing); err != nil {
 		return nil, err
@@ -354,7 +362,9 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 
 // Delete deletes a file: it sends a DeleteFileManifest transaction signed
 // with signing, which must name the owner (OwnerDID) and carry a SignFunc;
-// without them Delete sends nothing and returns a validation error.
+// without them Delete sends nothing and returns a validation error. A
+// transaction that fails to submit returns a *WriteError (see
+// FileSigningOptions.Nonce).
 func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigningOptions) error {
 	if err := checkFileSigning("Delete", signing); err != nil {
 		return err
