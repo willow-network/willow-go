@@ -86,7 +86,7 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 	}
 	defer httpResp.Body.Close()
 
-	respBody, err := httpbody.ReadAll(httpResp.Body)
+	respBody, err := httpbody.ReadAll(httpResp.Body, httpbody.Small)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -156,7 +156,7 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 		},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Tx)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) 
 		"params":  map[string]interface{}{},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, er
 		"params":  map[string]interface{}{},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Block)
 	if err != nil {
 		return nil, err
 	}
@@ -307,7 +307,7 @@ func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interfa
 		},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Block)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +338,7 @@ func (c *Client) GetValidators(ctx context.Context, height int64) (map[string]in
 		"params":  params,
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -369,7 +369,7 @@ func (c *Client) GetCommit(ctx context.Context, height int64) (map[string]interf
 		"params":  params,
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -401,7 +401,9 @@ type RPCError struct {
 	Data    string `json:"data,omitempty"`
 }
 
-func (c *Client) doRPCRequest(ctx context.Context, req interface{}) (*RPCResponse, error) {
+// doRPCRequest sends a JSON-RPC request to CometBFT and reads its answer, of
+// at most limit bytes (see the httpbody caps).
+func (c *Client) doRPCRequest(ctx context.Context, req interface{}, limit int64) (*RPCResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -420,7 +422,7 @@ func (c *Client) doRPCRequest(ctx context.Context, req interface{}) (*RPCRespons
 	}
 	defer resp.Body.Close()
 
-	respBody, err := httpbody.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

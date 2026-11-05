@@ -506,23 +506,27 @@ func (c *Client) buildURL(path string) string {
 	return c.baseURL.String() + path
 }
 
+// get GETs an API route whose answer is small (see httpbody.Small).
 func (c *Client) get(ctx context.Context, path string, result interface{}) error {
-	return c.doRequest(ctx, http.MethodGet, path, nil, result)
+	return c.doRequest(ctx, http.MethodGet, path, nil, httpbody.Small, result)
 }
 
-func (c *Client) post(ctx context.Context, path string, body, result interface{}) error {
-	return c.doRequest(ctx, http.MethodPost, path, body, result)
+// post POSTs to an API route, reading at most limit bytes of its answer.
+func (c *Client) post(ctx context.Context, path string, body interface{}, limit int64, result interface{}) error {
+	return c.doRequest(ctx, http.MethodPost, path, body, limit, result)
 }
 
 func (c *Client) put(ctx context.Context, path string, body, result interface{}) error {
-	return c.doRequest(ctx, http.MethodPut, path, body, result)
+	return c.doRequest(ctx, http.MethodPut, path, body, httpbody.Small, result)
 }
 
 func (c *Client) delete(ctx context.Context, path string, result interface{}) error {
-	return c.doRequest(ctx, http.MethodDelete, path, nil, result)
+	return c.doRequest(ctx, http.MethodDelete, path, nil, httpbody.Small, result)
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body, result interface{}) error {
+// doRequest sends a request to the API and decodes its answer, of at most
+// limit bytes (see the httpbody caps), into result.
+func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, limit int64, result interface{}) error {
 	var payload []byte
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -541,7 +545,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	defer resp.Body.Close()
 
 	// Read response body
-	respBody, err := httpbody.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, limit)
 	if err != nil {
 		return NewNetworkError("failed to read response body", err)
 	}
@@ -591,21 +595,21 @@ func (env *apiEnvelope) decode(result interface{}) error {
 	return nil
 }
 
-// getData GETs an API route that answers with the envelope and decodes its
-// data into result.
+// getData GETs an API route that answers with the envelope, its answer small
+// (see httpbody.Small), and decodes its data into result.
 func (c *Client) getData(ctx context.Context, path string, result interface{}) error {
-	return c.requestData(ctx, http.MethodGet, path, nil, result)
+	return c.requestData(ctx, http.MethodGet, path, nil, httpbody.Small, result)
 }
 
-// postData POSTs to an API route that answers with the envelope and decodes
-// its data into result.
-func (c *Client) postData(ctx context.Context, path string, body, result interface{}) error {
-	return c.requestData(ctx, http.MethodPost, path, body, result)
+// postData POSTs to an API route that answers with the envelope, reading at
+// most limit bytes of its answer, and decodes its data into result.
+func (c *Client) postData(ctx context.Context, path string, body interface{}, limit int64, result interface{}) error {
+	return c.requestData(ctx, http.MethodPost, path, body, limit, result)
 }
 
-func (c *Client) requestData(ctx context.Context, method, path string, body, result interface{}) error {
+func (c *Client) requestData(ctx context.Context, method, path string, body interface{}, limit int64, result interface{}) error {
 	var env apiEnvelope
-	if err := c.doRequest(ctx, method, path, body, &env); err != nil {
+	if err := c.doRequest(ctx, method, path, body, limit, &env); err != nil {
 		return err
 	}
 	return env.decode(result)
@@ -637,7 +641,7 @@ func (c *Client) postTx(ctx context.Context, body []byte, did string, nonce uint
 		return "", nonceUnknown, NewNetworkError("transaction submission failed", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := httpbody.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, httpbody.Small)
 	if err != nil {
 		return "", nonceUnknown, NewNetworkError("failed to read /tx/submit response", err)
 	}

@@ -199,7 +199,8 @@ func checkFileShape(m *FileManifest) error {
 // must hash to the manifest's chunk Merkle root and content hash. It refuses a
 // manifest the chain would refuse for its sizes (no data, more than 1 GiB or
 // 262,144 chunks, or a chunk count its total and chunk sizes don't make) before
-// it asks for any chunk.
+// it asks for any chunk, and a chunk longer than 2 MiB, the most the storage
+// node's upload route takes, as it reads it.
 func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
 	manifest, err := f.Metadata(subgroveID, fileKey)
 	if err != nil {
@@ -222,7 +223,7 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 		if i == manifest.ChunkCount-1 {
 			want = manifest.TotalSize - uint64(i)*want
 		}
-		chunk, err := httpbody.ReadAll(io.LimitReader(resp.Body, int64(want)+1))
+		chunk, err := httpbody.ReadAll(io.LimitReader(resp.Body, int64(want)+1), httpbody.Chunk)
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunk %d: %w", i, err)
@@ -267,7 +268,7 @@ func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, er
 	}
 
 	var manifest FileManifest
-	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&manifest); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
@@ -287,7 +288,7 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 
 	// The API answers {files, limit, start_after, has_more}, or {error} with
 	// a failure status, without the success/data envelope.
-	body, err := httpbody.ReadAll(resp.Body)
+	body, err := httpbody.ReadAll(resp.Body, httpbody.Small)
 	if err != nil {
 		return nil, NewNetworkError("failed to read /files response", err)
 	}

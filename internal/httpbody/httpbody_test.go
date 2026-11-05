@@ -5,34 +5,40 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 )
 
-// An answer of MaxBytes is read whole; one byte more is refused, to a reader
-// or a JSON decoder, with ErrTooLarge.
-func TestReadAllStopsAtMaxBytes(t *testing.T) {
-	got, err := ReadAll(io.LimitReader(zeros{}, MaxBytes))
-	if err != nil || len(got) != MaxBytes {
-		t.Fatalf("MaxBytes: %d bytes, %v", len(got), err)
-	}
-	if _, err := ReadAll(io.LimitReader(zeros{}, MaxBytes+1)); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("MaxBytes+1: %v", err)
-	}
-	if _, err := ReadAll(zeros{}); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("an endless answer: %v", err)
-	}
-	padded := io.MultiReader(bytes.NewReader(bytes.Repeat([]byte{' '}, MaxBytes)), bytes.NewReader([]byte("{}")))
-	var v map[string]interface{}
-	if err := json.NewDecoder(Reader(padded)).Decode(&v); !errors.Is(err, ErrTooLarge) {
-		t.Fatalf("a JSON answer past MaxBytes: %v", err)
+// An answer of limit bytes is read whole; one byte more is refused, to a
+// reader or a JSON decoder, with an error that is ErrTooLarge and names the
+// limit.
+func TestReadAllStopsAtTheLimit(t *testing.T) {
+	for _, limit := range []int64{Small, Large} {
+		got, err := ReadAll(io.LimitReader(zeros{}, limit), limit)
+		if err != nil || int64(len(got)) != limit {
+			t.Fatalf("limit %d: %d bytes, %v", limit, len(got), err)
+		}
+		if _, err := ReadAll(io.LimitReader(zeros{}, limit+1), limit); !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("limit %d + 1: %v", limit, err)
+		}
+		_, err = ReadAll(zeros{}, limit)
+		var tooLarge *TooLargeError
+		if !errors.As(err, &tooLarge) || tooLarge.Limit != limit || !strings.Contains(err.Error(), "MiB limit") {
+			t.Fatalf("an endless answer under %d: %v", limit, err)
+		}
+		padded := io.MultiReader(bytes.NewReader(bytes.Repeat([]byte{' '}, int(limit))), bytes.NewReader([]byte("{}")))
+		var v map[string]interface{}
+		if err := json.NewDecoder(Reader(padded, limit)).Decode(&v); !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("a JSON answer past %d: %v", limit, err)
+		}
 	}
 }
 
 // A read that passes the cap returns the bytes up to it, and every read after
 // returns none (never a negative count) with ErrTooLarge.
 func TestReadsPastTheCapReturnNoBytes(t *testing.T) {
-	r := Reader(zeros{})
-	buf := make([]byte, 3<<20) // MaxBytes isn't a multiple of it
+	r := Reader(zeros{}, Small)
+	buf := make([]byte, 3<<20) // Small isn't a multiple of it
 	var total int
 	for {
 		n, err := r.Read(buf)
@@ -41,7 +47,7 @@ func TestReadsPastTheCapReturnNoBytes(t *testing.T) {
 		}
 		total += n
 		if err != nil {
-			if !errors.Is(err, ErrTooLarge) || total != MaxBytes {
+			if !errors.Is(err, ErrTooLarge) || total != Small {
 				t.Fatalf("after %d bytes: %v", total, err)
 			}
 			break

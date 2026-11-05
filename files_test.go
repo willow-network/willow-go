@@ -1,6 +1,7 @@
 package willow
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -107,6 +108,22 @@ func TestDownloadReadsTheChunksTheManifestMakes(t *testing.T) {
 	client, node, _ = fileServer(t, honest, func(i int) []byte { return []byte(strings.Repeat("x", 1<<20)) })
 	if _, err := client.Files.Download("sg", "f", node); err == nil || !strings.Contains(err.Error(), "longer than") {
 		t.Errorf("a 1 MiB chunk of 4,096 bytes: %v", err)
+	}
+}
+
+// A chunk is read up to 2 MiB, the most the storage node's upload route
+// takes, and refused past it, even when the manifest makes it longer.
+func TestDownloadReadsAChunkUpTo2MiB(t *testing.T) {
+	for _, size := range []int{2 << 20, 2<<20 + 1} {
+		data := bytes.Repeat([]byte{'w'}, size)
+		client, node, _ := fileServer(t, fileManifest(data, size), func(int) []byte { return data })
+		got, err := client.Files.Download("sg", "f", node)
+		switch {
+		case size == 2<<20 && (err != nil || !bytes.Equal(got, data)):
+			t.Errorf("a chunk of 2 MiB: %d bytes, %v", len(got), err)
+		case size > 2<<20 && (err == nil || !strings.Contains(err.Error(), "2 MiB limit")):
+			t.Errorf("a chunk of 2 MiB + 1: %d bytes, %v; want a refusal past 2 MiB", len(got), err)
+		}
 	}
 }
 

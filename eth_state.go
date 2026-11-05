@@ -438,7 +438,7 @@ func (e *EthOperations) post(ctx context.Context, path string, body interface{})
 		return nil, err
 	}
 	defer resp.Body.Close()
-	rb, err := httpbody.ReadAll(resp.Body)
+	rb, err := httpbody.ReadAll(resp.Body, httpbody.Large)
 	if err != nil {
 		return nil, err
 	}

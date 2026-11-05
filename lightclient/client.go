@@ -538,7 +538,7 @@ func (lc *LightClient) rpcCall(ctx context.Context, endpoint, method string, par
 	}
 	defer resp.Body.Close()
 
-	respBody, err := httpbody.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, httpbody.Small)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

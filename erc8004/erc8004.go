@@ -196,7 +196,7 @@ func (c *Client) get(path string) (*apiResponse, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := httpbody.ReadAll(resp.Body)
+	body, err := httpbody.ReadAll(resp.Body, httpbody.Small)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}

@@ -162,7 +162,7 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&rpcResp); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Small)).Decode(&rpcResp); err != nil {
 		return out, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if rpcResp.Error != nil {
@@ -239,7 +239,7 @@ func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockN
 	}
 	defer resp.Body.Close()
 
-	respBody, err := httpbody.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, httpbody.Large)
 	if err != nil {
 		return nil, NewNetworkError("failed to read matched-logs response", err)
 	}

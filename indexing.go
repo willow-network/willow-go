@@ -48,7 +48,7 @@ func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID str
 	if i.client.indexerURL == nil {
 		// The API answers GraphQL with the GraphQL response itself, not the
 		// success/data envelope.
-		if err := i.client.post(ctx, path, &sent, &response); err != nil {
+		if err := i.client.post(ctx, path, &sent, httpbody.Large, &response); err != nil {
 			return nil, err
 		}
 		return &response, nil
@@ -71,7 +71,7 @@ func (i *IndexingOperations) QueryUnverified(ctx context.Context, subgroveID str
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("GraphQL query failed with status %d", resp.StatusCode)
 	}
-	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&response); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Large)).Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
 	}
 	return &response, nil
@@ -184,7 +184,7 @@ func routeQuery[T any](
 		}
 		// Validator wraps responses in { success, data }; indexer doesn't.
 		// Decode into a union envelope that handles both shapes.
-		raw, err := httpbody.ReadAll(resp.Body)
+		raw, err := httpbody.ReadAll(resp.Body, httpbody.Large)
 		if err != nil {
 			return zero, fmt.Errorf("read validator response: %w", err)
 		}
@@ -212,7 +212,7 @@ func routeQuery[T any](
 		if resp.StatusCode != http.StatusOK {
 			return zero, fmt.Errorf("indexer returned %d", resp.StatusCode)
 		}
-		raw, err := httpbody.ReadAll(resp.Body)
+		raw, err := httpbody.ReadAll(resp.Body, httpbody.Large)
 		if err != nil {
 			return zero, fmt.Errorf("read indexer response: %w", err)
 		}
@@ -344,7 +344,7 @@ func (i *IndexingOperations) SqlQuery(ctx context.Context, subgroveID, query str
 	}
 
 	var result SqlResponse
-	if err := json.NewDecoder(httpbody.Reader(resp.Body)).Decode(&result); err != nil {
+	if err := json.NewDecoder(httpbody.Reader(resp.Body, httpbody.Large)).Decode(&result); err != nil {
 		return nil, fmt.Errorf("failed to decode SQL response: %w", err)
 	}
 

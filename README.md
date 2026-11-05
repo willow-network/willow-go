@@ -54,15 +54,38 @@ their result directly. u128 amounts (balances, stakes, fees, supplies) arrive
 as JSON numbers beyond 64 bits and are read exactly: as `consensus.Uint128`,
 or as decimal strings in `TokenInfo` and `FeeSchedule`.
 
-The SDK reads at most 64 MiB of any one HTTP answer (from the API, the
-CometBFT RPC, an indexer, or a storage node), well above the largest real
-answer (a proof is a few MB), and refuses a longer one with an error that
-says it is over the 64 MiB limit. The HTTP clients the SDK makes time out
-after 30 s (`WithTimeout` sets the client's, which `Files` also uses with
-the storage node, and `consensus.ClientConfig.Timeout` the consensus
-client's), and the light client's after `lightclient.Config.RPCTimeout`
-(10 s by default); a client you pass (`WithHTTPClient`,
-`NewEthOperations`) is used as it is.
+The SDK reads at most a set number of bytes of each HTTP answer (from the
+API, the CometBFT RPC, an indexer, or a storage node), by route, and refuses
+a longer one with an error that names the limit. A limit bounds the bytes
+read, not the memory decoding them takes, which can be a multiple of them:
+measured, a list of empty JSON objects decoded into maps keeps about 19
+times its length, and decoding a list of empty arrays into `interface{}`
+values allocates about 40 times it. Each limit is the smallest that holds
+the largest answer the node serves on its routes, where the node bounds it:
+
+- 4 MiB: answers of fixed shape or short lists: nonces, balances, token
+  info, fees, validators, indexers, health, `/tx/submit`, DID documents and
+  permissions, key grants, subgrove information, state roots, file
+  manifests and file-list pages, ERC-8004 answers, and CometBFT's status,
+  commit, validators, and ABCI queries. These answers are a few KB; 4 MiB
+  is the chain's `max_tx_bytes`.
+- 2 MiB: a file chunk, the most the storage node's upload route takes.
+- 12 MiB: `Data.Get`, `Data.GetProof`, and `consensus.Client.GetTx`, which
+  carry what one transaction holds (at most 4 MiB), a proof in hex and a
+  transaction in base64.
+- 32 MiB: `consensus.Client.GetBlock` and `GetLatestBlock` (a block of at
+  most 21 MiB, its transactions in base64).
+- 64 MiB: answers whose size the request sets, which the node doesn't cap:
+  `Data.QueryUnverified` (a page of 100 documents, the default, of up to
+  512 KiB each is 50 MiB), `Data.QueryHistorical`, GraphQL and SQL queries,
+  `FetchMatchedLogs`, and `EthOperations`. Ask for less (a lower `Limit`,
+  fewer slots) when an answer would be over it.
+
+The HTTP clients the SDK makes time out after 30 s (`WithTimeout` sets the
+client's, which `Files` also uses with the storage node, and
+`consensus.ClientConfig.Timeout` the consensus client's), and the light
+client's after `lightclient.Config.RPCTimeout` (10 s by default); a client
+you pass (`WithHTTPClient`, `NewEthOperations`) is used as it is.
 
 ## Signed transactions
 

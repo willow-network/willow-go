@@ -5,9 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/willow-network/willow-go/consensus"
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // DataOperations provides methods for data storage and retrieval.
@@ -97,7 +99,7 @@ func (d *DataOperations) GetUnverified(ctx context.Context, subgroveID, key stri
 // getValue reads a /data answer: its data is the stored JSON value.
 func (d *DataOperations) getValue(ctx context.Context, path, key string) (*DataResponse, error) {
 	var value map[string]interface{}
-	if err := d.client.getData(ctx, path, &value); err != nil {
+	if err := d.client.requestData(ctx, http.MethodGet, path, nil, httpbody.Tx, &value); err != nil {
 		return nil, err
 	}
 	return &DataResponse{Key: key, Data: value}, nil
@@ -142,7 +144,10 @@ func (d *DataOperations) Query(ctx context.Context, subgroveID string, query *Qu
 }
 
 // QueryUnverified queries data without a proof (include_proof false) and
-// returns the API's documents as they are. query isn't changed.
+// returns the API's documents as they are. query isn't changed. An answer
+// over 64 MiB is refused: the API sets no maximum Limit (100 documents of up
+// to 512 KiB each, its default page, fit), so ask for fewer documents when a
+// page would be over it.
 func (d *DataOperations) QueryUnverified(ctx context.Context, subgroveID string, query *QueryRequest) (*QueryResponse, error) {
 	if err := d.client.RequireAuth(); err != nil {
 		return nil, err
@@ -181,7 +186,7 @@ func (d *DataOperations) query(ctx context.Context, subgroveID string, query *Qu
 	if err != nil {
 		return nil, err
 	}
-	if err := d.client.postData(ctx, fmt.Sprintf("/query/%s", subgroveID), body, &answer); err != nil {
+	if err := d.client.postData(ctx, fmt.Sprintf("/query/%s", subgroveID), body, httpbody.Large, &answer); err != nil {
 		return nil, err
 	}
 	response := &QueryResponse{
@@ -273,7 +278,7 @@ func (d *DataOperations) GetProof(ctx context.Context, subgroveID, key string) (
 		Key    string   `json:"key"`
 		Height int64    `json:"height"`
 	}
-	if err := d.client.getData(ctx, path, &answer); err != nil {
+	if err := d.client.requestData(ctx, http.MethodGet, path, nil, httpbody.Tx, &answer); err != nil {
 		return nil, err
 	}
 	proof, err := hex.DecodeString(strings.TrimPrefix(answer.Proof, "0x"))
@@ -437,7 +442,7 @@ func (d *DataOperations) GetCheckpointStateRoot(ctx context.Context, subgroveID,
 func (d *DataOperations) QueryHistorical(ctx context.Context, subgroveID, checkpointID string, req *HistoricalQueryRequest) (*HistoricalQueryResponse, error) {
 	path := fmt.Sprintf("/historical/query/%s/%s", subgroveID, checkpointID)
 	var response HistoricalQueryResponse
-	if err := d.client.post(ctx, path, req, &response); err != nil {
+	if err := d.client.post(ctx, path, req, httpbody.Large, &response); err != nil {
 		return nil, err
 	}
 	return &response, nil
