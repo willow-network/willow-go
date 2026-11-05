@@ -294,8 +294,9 @@ func (lc *LightClient) VerifyHeader(ctx context.Context, untrusted LightBlock) (
 		}
 	}
 
-	// Verify commit signatures
-	signedPower, totalPower, sigCount := lc.verifyCommitSignatures(&untrusted)
+	// Sum the voting power of the validators the commit lists as signing.
+	// Their signatures aren't verified.
+	signedPower, totalPower, sigCount := lc.listedSigningPower(&untrusted)
 	result.VotingPower = signedPower
 	result.TotalPower = totalPower
 	result.SignatureCount = sigCount
@@ -311,7 +312,10 @@ func (lc *LightClient) VerifyHeader(ctx context.Context, untrusted LightBlock) (
 	return result, nil
 }
 
-func (lc *LightClient) verifyCommitSignatures(block *LightBlock) (signedPower, totalPower int64, sigCount int) {
+// listedSigningPower returns the voting power of the validators block's commit
+// lists as signing, the validator set's total, and how many it lists. It
+// doesn't verify their signatures.
+func (lc *LightClient) listedSigningPower(block *LightBlock) (signedPower, totalPower int64, sigCount int) {
 	totalPower = block.ValidatorSet.GetTotalVotingPower()
 
 	// Build validator map for quick lookup

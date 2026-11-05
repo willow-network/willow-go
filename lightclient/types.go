@@ -186,6 +186,9 @@ type TrustedState struct {
 }
 
 // VerificationResult represents the result of header verification.
+// VotingPower is the voting power of the validators the commit lists as
+// signing, SignatureCount how many it lists, and TotalPower the validator
+// set's; their signatures aren't verified.
 type VerificationResult struct {
 	// Verified is true when the checks VerifyHeader runs passed; they don't
 	// include the commit's signatures.
