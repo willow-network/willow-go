@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +169,55 @@ func TestFileWritesNeedSigning(t *testing.T) {
 	}
 	if n := atomic.LoadInt64(&requests); n != 0 {
 		t.Fatalf("sent %d requests without signing", n)
+	}
+}
+
+// An upload whose manifest was accepted but whose chunk the storage node
+// refuses, or never answers for, fails with a *ChunkUploadError naming the
+// chunk and carrying the manifest's submission; the chunks after it aren't
+// sent.
+func TestUploadReportsAChunkTheStorageNodeRefuses(t *testing.T) {
+	var uploads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		switch {
+		case r.URL.Path == "/tx/submit":
+			_, _ = w.Write([]byte(`{"success":true,"data":{"tx_hash":"AB12","code":0,"log":""}}`))
+		case strings.HasPrefix(r.URL.Path, "/upload/sg/f"):
+			uploads = append(uploads, r.URL.Query().Get("chunk_index"))
+			if r.URL.Query().Get("chunk_index") == "1" {
+				w.WriteHeader(http.StatusInsufficientStorage)
+				_, _ = w.Write([]byte(`{"error":"disk full"}`))
+			}
+		default:
+			t.Errorf("asked for %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := vectorIdentity(t, Ed25519)
+	data := bytes.Repeat([]byte{'w'}, 3*DefaultChunkSize) // three chunks
+	_, err = client.Files.Upload("sg", "f", "f.bin", data, srv.URL, fileSigning(id, 9))
+	var chunkErr *ChunkUploadError
+	if !errors.As(err, &chunkErr) || chunkErr.Chunk != 1 || chunkErr.Manifest == nil || chunkErr.Manifest.ChunkCount != 3 ||
+		chunkErr.Submission == nil || chunkErr.Submission.TxHash != "AB12" || chunkErr.Submission.Nonce != 9 ||
+		chunkErr.Submission.DID != id.DID() {
+		t.Fatalf("a chunk refused with 507: %#v", err)
+	}
+	if status, ok := IsHTTPError(err); !ok || status != http.StatusInsufficientStorage || !strings.Contains(err.Error(), "disk full") {
+		t.Fatalf("a chunk refused with 507: %v; want its status and message", err)
+	}
+	if fmt.Sprint(uploads) != "[0 1]" {
+		t.Fatalf("chunks sent %v, want [0 1]", uploads)
+	}
+
+	// A storage node that can't be reached fails the first chunk.
+	_, err = client.Files.Upload("sg", "f", "f.bin", data, "http://127.0.0.1:1", fileSigning(id, 10))
+	if !errors.As(err, &chunkErr) || chunkErr.Chunk != 0 || chunkErr.Submission == nil || chunkErr.Submission.Nonce != 10 {
+		t.Fatalf("an unreachable storage node: %#v", err)
 	}
 }
 

@@ -746,22 +746,22 @@ func usedNonceError(err error, why string) error {
 }
 
 // submitSigned submits a transaction did signed under nonce, a nonce the
-// caller chose, and records the outcome, so that this client's own writes
-// skip the nonce while it is in flight and as long as its outcome holds it.
-// It sends nothing while a submission under the nonce from this client is in
-// flight. An unsigned transaction (did empty) records nothing.
-func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, body []byte) error {
+// caller chose, returning its hash, and records the outcome, so that this
+// client's own writes skip the nonce while it is in flight and as long as its
+// outcome holds it. It sends nothing while a submission under the nonce from
+// this client is in flight. An unsigned transaction (did empty) records
+// nothing.
+func (c *Client) submitSigned(ctx context.Context, did string, nonce uint64, body []byte) (txHash string, err error) {
 	if did == "" {
-		_, _, err := c.postTx(ctx, body, did, nonce)
-		return err
+		txHash, _, err = c.postTx(ctx, body, did, nonce)
+		return txHash, err
 	}
 	if err := c.nonces.begin(did, nonce, nil); err != nil {
-		return fmt.Errorf("nonce %d of %s: %w, so the transaction wasn't sent", nonce, did, err)
+		return "", fmt.Errorf("nonce %d of %s: %w, so the transaction wasn't sent", nonce, did, err)
 	}
 	outcome := nonceFree
 	digest := writeDigest(body)
 	defer func() { c.nonces.settle(did, nonce, outcome, digest) }()
-	var err error
-	_, outcome, err = c.postTx(ctx, body, did, nonce)
-	return err
+	txHash, outcome, err = c.postTx(ctx, body, did, nonce)
+	return txHash, err
 }

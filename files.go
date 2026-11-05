@@ -67,7 +67,10 @@ type FileOperations struct {
 // chunks to the storage node. signing must name the owner (OwnerDID) and
 // carry a SignFunc: without them Upload sends nothing and returns a
 // validation error, as the chain refuses a manifest with no owner or
-// signature.
+// signature. Once the manifest's transaction is accepted, a chunk the storage
+// node doesn't store (an answer other than 2xx, or a failed request) stops
+// the upload with a *ChunkUploadError, which carries the manifest, its
+// transaction, and the chunk.
 func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
 	if err := checkFileSigning("Upload", signing); err != nil {
 		return nil, err
@@ -135,32 +138,79 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal manifest tx: %w", err)
 	}
-	if err := f.client.submitSigned(context.Background(), fields.OwnerDID, fields.Nonce, txBody); err != nil {
+	txHash, err := f.client.submitSigned(context.Background(), fields.OwnerDID, fields.Nonce, txBody)
+	if err != nil {
 		return nil, fmt.Errorf("failed to broadcast manifest tx: %w", err)
+	}
+	manifest := &FileManifest{
+		FileKey:         fileKey,
+		Filename:        filename,
+		ContentType:     guessContentType(filename),
+		TotalSize:       uint64(len(data)),
+		ContentHash:     contentHashHex,
+		ChunkCount:      uint32(chunkCount),
+		ChunkSize:       uint32(chunkSize),
+		ChunkMerkleRoot: hex.EncodeToString(merkleRoot[:]),
+		StorageNodes:    []string{storageNodeEndpoint},
 	}
 
 	// Upload chunks to storage node
 	for i, chunk := range chunks {
 		url := fmt.Sprintf("%s/upload/%s/%s?chunk_index=%d&chunk_count=%d&content_hash=%s",
 			storageNodeEndpoint, subgroveID, fileKey, i, chunkCount, contentHashHex)
-		resp, err := f.storageClient().Post(url, "application/octet-stream", bytes.NewReader(chunk))
-		if err != nil {
-			return nil, fmt.Errorf("failed to upload chunk %d: %w", i, err)
+		if err := f.uploadChunk(url, chunk); err != nil {
+			return nil, &ChunkUploadError{
+				Manifest:   manifest,
+				Submission: &WriteResult{DID: fields.OwnerDID, Nonce: fields.Nonce, TxHash: txHash},
+				Chunk:      i,
+				Err:        err,
+			}
 		}
-		resp.Body.Close()
 	}
+	return manifest, nil
+}
 
-	return &FileManifest{
-		FileKey:        fileKey,
-		Filename:       filename,
-		ContentType:    guessContentType(filename),
-		TotalSize:      uint64(len(data)),
-		ContentHash:    contentHashHex,
-		ChunkCount:     uint32(chunkCount),
-		ChunkSize:      uint32(chunkSize),
-		ChunkMerkleRoot: hex.EncodeToString(merkleRoot[:]),
-		StorageNodes:   []string{storageNodeEndpoint},
-	}, nil
+// uploadChunk sends one chunk to the storage node's upload route, returning
+// an *HTTPError for an answer other than 2xx.
+func (f *FileOperations) uploadChunk(url string, chunk []byte) error {
+	resp, err := f.storageClient().Post(url, "application/octet-stream", bytes.NewReader(chunk))
+	if err != nil {
+		return NewNetworkError("the chunk upload failed", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return NewHTTPError(resp.StatusCode, "the storage node refused the chunk: "+strings.TrimSpace(string(message)))
+	}
+	return nil
+}
+
+// ChunkUploadError is an Upload whose manifest transaction CheckTx accepted
+// but whose chunk Chunk the storage node didn't store. The manifest is on
+// chain once its transaction lands, which uses its nonce, but the storage
+// node doesn't hold the file whole: chunk Chunk failed, and the chunks after
+// it weren't sent.
+type ChunkUploadError struct {
+	// Manifest is the manifest Upload sent, as it returns it on success.
+	Manifest *FileManifest
+	// Submission is the manifest's transaction: its signer, nonce, and hash.
+	Submission *WriteResult
+	// Chunk is the index of the chunk the storage node didn't store.
+	Chunk int
+	// Err is why: the request's error, or an *HTTPError carrying the
+	// storage node's status and message.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ChunkUploadError) Error() string {
+	return fmt.Sprintf("the manifest of file %s was accepted (transaction %s, nonce %d of %s), but chunk %d of %d wasn't stored: %v",
+		e.Manifest.FileKey, e.Submission.TxHash, e.Submission.Nonce, e.Submission.DID, e.Chunk, e.Manifest.ChunkCount, e.Err)
+}
+
+// Unwrap returns Err.
+func (e *ChunkUploadError) Unwrap() error {
+	return e.Err
 }
 
 // storageClient is the HTTP client Upload and Download talk to a storage node
@@ -337,7 +387,7 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete tx: %w", err)
 	}
-	if err := f.client.submitSigned(context.Background(), ownerDID, nonce, txBody); err != nil {
+	if _, err := f.client.submitSigned(context.Background(), ownerDID, nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast delete tx: %w", err)
 	}
 	return nil
@@ -379,7 +429,7 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	if err != nil {
 		return fmt.Errorf("failed to marshal unregister storage node tx: %w", err)
 	}
-	if err := f.client.submitSigned(context.Background(), nodeDID, signing.Nonce, txBody); err != nil {
+	if _, err := f.client.submitSigned(context.Background(), nodeDID, signing.Nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
 	}
 	return nil
