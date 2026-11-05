@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // GetTx sends the tx method's hash as base64 of its 32 bytes, the form
@@ -80,5 +81,16 @@ func TestGetTxReportsOtherErrors(t *testing.T) {
 	client := NewClient(ClientConfig{RPCURL: srv.URL})
 	if result, err := client.GetTx(context.Background(), strings.Repeat("00", 32)); err == nil {
 		t.Fatalf("GetTx = %+v, want an error", result)
+	}
+}
+
+// A config that leaves Timeout 0 gets DefaultClientConfig's timeout, not
+// none; a timeout the config gives is kept.
+func TestNewClientDefaultsTheTimeout(t *testing.T) {
+	if got := NewClient(ClientConfig{RPCURL: "http://rpc"}).httpClient.Timeout; got != DefaultClientConfig().Timeout {
+		t.Errorf("a config without a timeout: %v", got)
+	}
+	if got := NewClient(ClientConfig{Timeout: time.Second}).httpClient.Timeout; got != time.Second {
+		t.Errorf("a config of 1 s: %v", got)
 	}
 }

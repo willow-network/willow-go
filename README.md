@@ -57,7 +57,12 @@ or as decimal strings in `TokenInfo` and `FeeSchedule`.
 The SDK reads at most 64 MiB of any one HTTP answer (from the API, the
 CometBFT RPC, an indexer, or a storage node), well above the largest real
 answer (a proof is a few MB), and refuses a longer one with an error that
-says it is over the 64 MiB limit.
+says it is over the 64 MiB limit. The HTTP clients the SDK makes time out
+after 30 s (`WithTimeout` sets the client's, which `Files` also uses with
+the storage node, and `consensus.ClientConfig.Timeout` the consensus
+client's), and the light client's after `lightclient.Config.RPCTimeout`
+(10 s by default); a client you pass (`WithHTTPClient`,
+`NewEthOperations`) is used as it is.
 
 ## Signed transactions
 

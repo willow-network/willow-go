@@ -30,7 +30,8 @@ type ClientConfig struct {
 	// APIURL is the Willow REST API endpoint. Transaction submission
 	// goes through its /tx/submit endpoint because the validator's
 	// on-the-wire format is bincode.
-	APIURL  string
+	APIURL string
+	// Timeout is the HTTP client's timeout; 0 is DefaultClientConfig's.
 	Timeout time.Duration
 }
 
@@ -45,6 +46,9 @@ func DefaultClientConfig() ClientConfig {
 
 // NewClient creates a new consensus client.
 func NewClient(config ClientConfig) *Client {
+	if config.Timeout == 0 {
+		config.Timeout = DefaultClientConfig().Timeout
+	}
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
