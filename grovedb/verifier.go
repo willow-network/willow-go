@@ -765,11 +765,19 @@ func verifyLayerProof(layer *LayerProof, currentPath [][]byte, results *[]QueryR
 	}
 
 	// Process each proven value
+	walked := make(map[string]bool, len(layer.LowerLayers))
 	for _, proved := range merkResult.ResultSet {
 		keyHex := hex.EncodeToString(proved.Key)
 		lowerLayer, hasLower := layer.LowerLayers[keyHex]
 
 		if hasLower && proved.Value != nil {
+			// A key proven twice would walk its lower layer per copy, doubling
+			// the work with each layer of a short proof.
+			if walked[keyHex] {
+				return CryptoHash{}, NewVerificationError(fmt.Sprintf(
+					"the layer proves key %s more than once", keyHex))
+			}
+			walked[keyHex] = true
 			// This is a subtree - verify the lower layer
 			newPath := append(append([][]byte{}, currentPath...), proved.Key)
 			lowerHash, err := verifyLayerProof(lowerLayer, newPath, results)
