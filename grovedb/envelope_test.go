@@ -122,3 +122,49 @@ func TestTrailingBytesRejected(t *testing.T) {
 		t.Fatal("trailing byte accepted")
 	}
 }
+
+// A proof that names a key twice in a layer walks that key's lower layer once:
+// walking it per copy doubles the work with each layer, and a proof of a few
+// KB would outrun any memory.
+func TestALayerThatRepeatsAKeyIsRefused(t *testing.T) {
+	kv := func(key, value []byte) []byte {
+		b := []byte{0x03, byte(len(key))}
+		b = append(b, key...)
+		b = append(b, byte(len(value)>>8), byte(len(value)))
+		return append(b, value...)
+	}
+	kvvh := func(key, value []byte, vh CryptoHash) []byte {
+		b := []byte{0x04, byte(len(key))}
+		b = append(b, key...)
+		b = append(b, byte(len(value)>>8), byte(len(value)))
+		b = append(b, value...)
+		return append(b, vh[:]...)
+	}
+	vec := func(b []byte) []byte { return append([]byte{byte(len(b))}, b...) }
+	key, value := []byte("a"), []byte("v")
+	merk := kv(key, value)
+	res, err := ExecuteMerkProof(merk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lower := res.RootHash
+	layer := append(vec(merk), 0)
+	for d := 0; d < 12; d++ {
+		vh := CombineHash(ValueHash(value), lower)
+		m := append(kvvh(key, value, vh), kvvh(key, value, vh)...)
+		m = append(m, 0x10)
+		r, err := ExecuteMerkProof(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		lower = r.RootHash
+		next := append(vec(m), 1)
+		next = append(next, vec(key)...)
+		layer = append(next, layer...)
+	}
+	proof := append(append([]byte{0}, layer...), 1)
+	out, err := VerifyProof(proof)
+	if err == nil {
+		t.Fatalf("a proof that repeats a key in each layer verified, with %d results", len(out.Results))
+	}
+}

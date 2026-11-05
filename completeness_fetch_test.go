@@ -190,3 +190,31 @@ func TestVerifyBlockCompletenessNoAnchor(t *testing.T) {
 		t.Fatal("expected false result when no anchor")
 	}
 }
+
+// The anchor the RPC node answers must be for the subgrove and block asked
+// for: one for another is an error, and the indexer isn't asked.
+func TestFetchEventsCommitmentRefusesAnotherSubgroveOrBlock(t *testing.T) {
+	server := completenessTestServer(t, vectorBCommitmentHex, authoritativeMatchedLogsBody) // anchors sg, block 7
+	defer server.Close()
+	client, err := NewClient(server.URL, WithRPCURL(server.URL), WithIndexerURL(server.URL))
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+
+	if got, err := client.FetchEventsCommitment(ctx, "sg", 7); err != nil || got != hexCommitment(t, vectorBCommitmentHex) {
+		t.Fatalf("the anchor asked for: %x, %v", got, err)
+	}
+	for _, ask := range []struct {
+		subgrove string
+		block    uint64
+	}{{"other", 7}, {"sg", 8}} {
+		if _, err := client.FetchEventsCommitment(ctx, ask.subgrove, ask.block); !IsValidationError(err) {
+			t.Errorf("%s block %d: %v; want a validation error", ask.subgrove, ask.block, err)
+		}
+		if ok, err := client.VerifyBlockCompleteness(ctx, ask.subgrove, ask.block); ok || err == nil {
+			t.Errorf("VerifyBlockCompleteness %s block %d = %v, %v; want an error", ask.subgrove, ask.block, ok, err)
+		}
+	}
+}

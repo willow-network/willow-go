@@ -27,15 +27,16 @@ func TestTransactionsGoToTxSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.submitTx(context.Background(), map[string]any{"GrantSubgroveKey": map[string]any{}}); err != nil {
-		t.Fatalf("accepted tx: %v", err)
+	body := []byte(`{"GrantSubgroveKey":{}}`)
+	if hash, outcome, err := client.postTx(context.Background(), body, "did:willow:a", 1); err != nil || hash != "AB" || outcome != nonceAccepted {
+		t.Fatalf("accepted tx: %q, %v, %v", hash, outcome, err)
 	}
 	// CheckTx refusals come back as HTTP 200 with a nonzero code.
 	code = 5
-	err = client.submitTx(context.Background(), map[string]any{"GrantSubgroveKey": map[string]any{}})
+	_, outcome, err := client.postTx(context.Background(), body, "did:willow:a", 1)
 	var txErr *TransactionError
-	if !errors.As(err, &txErr) || txErr.ErrorCode != 5 {
-		t.Fatalf("refused tx: got %v, want a TransactionError with code 5", err)
+	if !errors.As(err, &txErr) || txErr.ErrorCode != 5 || outcome != nonceFree {
+		t.Fatalf("refused tx: got %v (%v), want a TransactionError with code 5 that gives the nonce back", err, outcome)
 	}
 }
 
@@ -109,10 +110,10 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 	client.SetIdentity(id)
 	ctx := context.Background()
 
-	if err := client.Privacy.RevokeSubgroveKey(ctx, "sg", "did:willow:b"); err != nil {
+	if _, err := client.Privacy.RevokeSubgroveKey(ctx, "sg", "did:willow:b"); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Privacy.GrantSubgroveKey(ctx, "sg", EncryptedKeyGrant{
+	if _, err := client.Privacy.GrantSubgroveKey(ctx, "sg", EncryptedKeyGrant{
 		GranteeDID: "did:willow:b", EphemeralPublicKey: []byte{1, 2}, EncryptedKey: []byte{3},
 	}); err != nil {
 		t.Fatal(err)
@@ -122,7 +123,9 @@ func TestTransactionByteFieldsAreNumberArrays(t *testing.T) {
 	if err := client.Files.Delete("sg", "f", signing); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Privacy.RotateSubgroveKey(ctx, "sg", 2, nil); err != nil {
+	if _, err := client.Privacy.RotateSubgroveKey(ctx, "sg", 2, []EncryptedKeyGrant{{
+		GranteeDID: "did:willow:b", KeyEpoch: 2, EphemeralPublicKey: make([]byte, 32), EncryptedKey: []byte{3},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := client.Files.UnregisterStorageNode("did:willow:n", signing); err != nil {
@@ -189,8 +192,12 @@ func TestTransactionsAreNotResubmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.submitTx(context.Background(), map[string]any{"RevokeSubgroveKey": map[string]any{}}); err == nil {
+	_, outcome, err := client.postTx(context.Background(), []byte(`{"RevokeSubgroveKey":{}}`), "did:willow:a", 1)
+	if err == nil {
 		t.Fatal("a 502 was reported as success")
+	}
+	if outcome != nonceUnknown {
+		t.Fatalf("a 502 left the nonce %v, want unknown (it may be in the mempool)", outcome)
 	}
 	if calls != 1 {
 		t.Fatalf("submitted %d times, want 1", calls)

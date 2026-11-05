@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/willow-network/willow-go/internal/httpbody"
 	"github.com/willow-network/willow-go/lightclient"
 )
 
@@ -21,12 +22,18 @@ type Client struct {
 	baseURL         *url.URL
 	indexerURL      *url.URL // Optional indexer node URL for GraphQL/SQL routing
 	rpcURL          *url.URL // Optional CometBFT JSON-RPC endpoint override (for ABCI queries)
+	apiKey          string   // The managed-tier API key (WithAPIKey)
 	identity        *Identity
 	identityMu      sync.RWMutex
 	retryConfig     RetryConfig
 	lightClient     *lightclient.LightClient
 	lightClientMu   sync.Mutex
 	lightClientInit bool
+
+	// nonces hands out transaction nonces per signing DID (see NextNonce).
+	nonces *nonceAllocator
+	// noncePollInterval is how often WaitUntilLanded reads the nonce state.
+	noncePollInterval time.Duration
 
 	// Computed fields registry for SDK-side derived field computation
 	computedFields *ComputedFieldRegistry
@@ -53,6 +60,10 @@ type Client struct {
 // ClientOption is a functional option for configuring the Client.
 type ClientOption func(*Client) error
 
+// defaultTimeout is the timeout of the HTTP clients the SDK makes when the
+// caller gives none.
+const defaultTimeout = 30 * time.Second
+
 // NewClient creates a new Willow client with the given API URL and options.
 func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 	parsedURL, err := url.Parse(strings.TrimSuffix(apiURL, "/"))
@@ -62,11 +73,13 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 
 	client := &Client{
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: defaultTimeout,
 		},
-		baseURL:        parsedURL,
-		retryConfig:    DefaultRetryConfig(),
-		computedFields: NewComputedFieldRegistry(),
+		baseURL:           parsedURL,
+		retryConfig:       DefaultRetryConfig(),
+		computedFields:    NewComputedFieldRegistry(),
+		nonces:            newNonceAllocator(time.Now),
+		noncePollInterval: time.Second,
 	}
 
 	// Apply options
@@ -74,6 +87,21 @@ func NewClient(apiURL string, opts ...ClientOption) (*Client, error) {
 		if err := opt(client); err != nil {
 			return nil, err
 		}
+	}
+	if client.apiKey != "" {
+		// A copy, so that a client the caller passed (WithHTTPClient) doesn't
+		// send the key elsewhere.
+		keyed := *client.httpClient
+		base := keyed.Transport
+		if base == nil {
+			base = http.DefaultTransport
+		}
+		origins := map[string]bool{origin(client.baseURL): true}
+		if client.indexerURL != nil {
+			origins[origin(client.indexerURL)] = true
+		}
+		keyed.Transport = &apiKeyTransport{base: base, key: client.apiKey, origins: origins}
+		client.httpClient = &keyed
 	}
 
 	// Initialize sub-clients
@@ -134,8 +162,10 @@ func WithIndexerURL(indexerURL string) ClientOption {
 
 // WithRPCURL sets an explicit CometBFT JSON-RPC endpoint (e.g.
 // http://localhost:26657). Used for ABCI store queries such as the
-// completeness anchor. When unset, the endpoint is derived from the API URL by
-// swapping the :3031 REST port for :26657.
+// completeness anchor and, only when set, the account nonce state (see
+// GetAccountNonce), whose bitmap of used nonces lets writes skip them. When
+// unset, the endpoint is derived from the API URL by swapping the :3031 REST
+// port for :26657, and the nonce state is read from the API (its base alone).
 func WithRPCURL(rpcURL string) ClientOption {
 	return func(c *Client) error {
 		parsed, err := url.Parse(strings.TrimSuffix(rpcURL, "/"))
@@ -147,7 +177,10 @@ func WithRPCURL(rpcURL string) ClientOption {
 	}
 }
 
-// WithLightClient enables light client verification.
+// WithLightClient sets the light client LightClient and GetOrCreateLightClient
+// return. It tracks CometBFT headers without verifying their commit
+// signatures (see the lightclient package), and no read is verified against
+// it.
 func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	return func(c *Client) error {
 		c.lightClient = lc
@@ -155,35 +188,65 @@ func WithLightClient(lc *lightclient.LightClient) ClientOption {
 	}
 }
 
-// apiKeyTransport wraps a base RoundTripper so every outbound request
-// carries the managed-tier `X-API-Key` header. The wrap is non-destructive:
-// the original request is cloned before the header is set, so the wrapped
-// transport is safe to share across goroutines and reuse with other clients.
+// apiKeyTransport wraps a base RoundTripper so that each request to one of
+// origins (the API's, and the indexer's named with WithIndexerURL) carries
+// the managed-tier `X-API-Key` header, and no other request does. It checks
+// every request, a redirect's included. The original request is cloned
+// before the header is set, so the transport is safe to share across
+// goroutines.
 type apiKeyTransport struct {
-	base http.RoundTripper
-	key  string
+	base    http.RoundTripper
+	key     string
+	origins map[string]bool
 }
 
 func (t *apiKeyTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if !t.origins[origin(req.URL)] {
+		if req.Header.Get("X-API-Key") == "" {
+			return t.base.RoundTrip(req)
+		}
+		req = req.Clone(req.Context())
+		req.Header.Del("X-API-Key")
+		return t.base.RoundTrip(req)
+	}
 	req2 := req.Clone(req.Context())
 	req2.Header.Set("X-API-Key", t.key)
 	return t.base.RoundTrip(req2)
 }
 
-// WithAPIKey configures the managed-tier API key. When set, the SDK sends
-// `X-API-Key: <key>` on every request. Mint a key at
+// origin is u's scheme, host, and port, a WebSocket scheme read as its HTTP
+// one and a default port made explicit.
+func origin(u *url.URL) string {
+	scheme := strings.ToLower(u.Scheme)
+	switch scheme {
+	case "ws":
+		scheme = "http"
+	case "wss":
+		scheme = "https"
+	}
+	port := u.Port()
+	if port == "" {
+		port = "80"
+		if scheme == "https" {
+			port = "443"
+		}
+	}
+	return scheme + "://" + strings.ToLower(u.Hostname()) + ":" + port
+}
+
+// WithAPIKey configures the managed-tier API key. Mint a key at
 // https://dashboard.willow.tech/account. Required for queries and writes
 // against managed api.willow.tech / indexer.willow.tech.
+//
+// The SDK sends `X-API-Key: <key>` only to the API URL's origin and to the
+// indexer URL's (WithIndexerURL), whatever the order of the options: never to
+// an indexer it discovers from the API's /indexers list, whose endpoint anyone
+// who registers an indexer chooses, nor to the RPC URL or a storage node. To
+// send the key to an indexer, name it with WithIndexerURL. A client passed
+// with WithHTTPClient isn't changed: the SDK uses a copy that carries the key.
 func WithAPIKey(key string) ClientOption {
 	return func(c *Client) error {
-		if key == "" {
-			return nil
-		}
-		base := c.httpClient.Transport
-		if base == nil {
-			base = http.DefaultTransport
-		}
-		c.httpClient.Transport = &apiKeyTransport{base: base, key: key}
+		c.apiKey = key
 		return nil
 	}
 }
@@ -303,8 +366,9 @@ func (c *Client) RequireAuth() error {
 
 // RegisterComputedFields registers computed fields for a dataset.
 //
-// Computed fields are derived values calculated from proven data,
-// enabling drop-in compatibility with The Graph's query interfaces.
+// Computed fields are derived values calculated from the values a query
+// returns, which are unverified, enabling drop-in compatibility with The
+// Graph's query interfaces.
 //
 // Example:
 //
@@ -323,42 +387,46 @@ func (c *Client) GetComputedFields(datasetID string) (ComputedFieldSet, bool) {
 	return c.computedFields.Get(datasetID)
 }
 
-// RegisterDID registers a new DID document.
+// RegisterDID returns an unsupported-operation error and sends nothing.
+//
+// The API serves no DID registration route: a DID is registered on chain by a
+// RegisterDid transaction sent to POST /tx/submit, which this SDK does not
+// build.
 //
 // Willow DIDs are self-certifying: the id is derived from the public key (see
 // GenerateDID), not chosen. Because the fee for registration is paid from the
-// derived id's own balance, a new DID must be funded BEFORE it is registered:
+// derived id's own balance, a new DID must be funded (a token transfer of at
+// least the registration fee to identity.DID()) before it is registered.
 //
-//  1. Generate the identity locally (willow.NewIdentity) — no network call.
-//  2. Fund it: have an already-funded account submit a token transfer of at
-//     least the registration fee to identity.DID() (see FormatTransferMessage
-//     / TransferRequest). Confirm with client.Token.GetBalance(ctx, did).
-//  3. Register: client.RegisterDID(ctx, identity.DidDocument).
+// Deprecated: RegisterDID always fails, and this SDK has no replacement: it
+// builds no RegisterDid transaction.
 func (c *Client) RegisterDID(ctx context.Context, didDocument *DidDocument) (*DidDocument, error) {
-	var result DidDocument
-	err := c.post(ctx, "/did", didDocument, &result)
-	if err != nil {
-		return nil, err
-	}
-	return &result, nil
+	return nil, NewUnsupportedError("RegisterDID: the API serves no DID registration route; a DID is registered by a RegisterDid transaction sent to POST /tx/submit, which this SDK does not build")
 }
 
-// GetDID retrieves information about a DID.
+// GetDID retrieves a DID's on-chain document. Its balance is read with
+// Token.GetBalance.
 func (c *Client) GetDID(ctx context.Context, did string) (*DidInfo, error) {
-	var info DidInfo
-	err := c.get(ctx, fmt.Sprintf("/did/%s", did), &info)
-	if err != nil {
+	var document *DidDocument
+	if err := c.getData(ctx, fmt.Sprintf("/did/%s", did), &document); err != nil {
 		return nil, err
 	}
-	return &info, nil
+	if document == nil {
+		return nil, &WillowError{Type: ErrorTypeNotFound, Message: "DID not found"}
+	}
+	return &DidInfo{Did: document.ID, Document: document, CreatedAt: document.Created}, nil
 }
 
-// Health checks the health of the node.
+// Health checks the health of the node. The API answers /health with the
+// status itself, not the success/data envelope.
 func (c *Client) Health(ctx context.Context) (*HealthStatus, error) {
 	var status HealthStatus
 	err := c.get(ctx, "/health", &status)
 	if err != nil {
 		return nil, err
+	}
+	if status.Status != "" {
+		status.Healthy = status.Status == "healthy"
 	}
 	return &status, nil
 }
@@ -368,24 +436,34 @@ func (c *Client) GetRootHash(ctx context.Context) (string, error) {
 	var result struct {
 		RootHash string `json:"root_hash"`
 	}
-	err := c.get(ctx, "/state/root-hash", &result)
+	err := c.getData(ctx, "/state/root-hash", &result)
 	if err != nil {
 		return "", err
 	}
 	return result.RootHash, nil
 }
 
-// GetVerifiedRootHash returns the verified root hash from consensus.
-func (c *Client) GetVerifiedRootHash(ctx context.Context) (string, error) {
+// GetLatestAppHash returns the app hash of the latest block, as the API reads
+// it from its CometBFT node (/state/root-hash/verified). The SDK doesn't
+// verify it: it is the API's value, not checked against the validators'
+// commit signatures.
+func (c *Client) GetLatestAppHash(ctx context.Context) (string, error) {
 	var result struct {
 		RootHash string `json:"root_hash"`
-		Height   int64  `json:"height"`
 	}
-	err := c.get(ctx, "/state/root-hash/verified", &result)
+	err := c.getData(ctx, "/state/root-hash/verified", &result)
 	if err != nil {
 		return "", err
 	}
 	return result.RootHash, nil
+}
+
+// GetVerifiedRootHash returns GetLatestAppHash: the API's value, which the
+// SDK doesn't verify.
+//
+// Deprecated: the hash isn't verified; use GetLatestAppHash.
+func (c *Client) GetVerifiedRootHash(ctx context.Context) (string, error) {
+	return c.GetLatestAppHash(ctx)
 }
 
 // LightClient returns the light client, if configured.
@@ -398,11 +476,10 @@ func (c *Client) HasLightClient() bool {
 	return c.lightClient != nil
 }
 
-// GetOrCreateLightClient returns the light client, creating one with trust-on-first-use if needed.
-//
-// Trust-on-first-use bootstrap: the first verified header is trusted, and
-// every subsequent header chains from it cryptographically. Pin a known-good
-// checkpoint header in production deployments.
+// GetOrCreateLightClient returns the light client, creating one with
+// trust-on-first-use if needed: it takes the RPC endpoint's latest header as
+// trusted. See the lightclient package for what its VerifyHeader checks; it
+// does not verify commit signatures.
 func (c *Client) GetOrCreateLightClient(ctx context.Context) (*lightclient.LightClient, error) {
 	if c.lightClient != nil {
 		return c.lightClient, nil
@@ -478,23 +555,27 @@ func (c *Client) buildURL(path string) string {
 	return c.baseURL.String() + path
 }
 
+// get GETs an API route whose answer is small (see httpbody.Small).
 func (c *Client) get(ctx context.Context, path string, result interface{}) error {
-	return c.doRequest(ctx, http.MethodGet, path, nil, result)
+	return c.doRequest(ctx, http.MethodGet, path, nil, httpbody.Small, result)
 }
 
-func (c *Client) post(ctx context.Context, path string, body, result interface{}) error {
-	return c.doRequest(ctx, http.MethodPost, path, body, result)
+// post POSTs to an API route, reading at most limit bytes of its answer.
+func (c *Client) post(ctx context.Context, path string, body interface{}, limit int64, result interface{}) error {
+	return c.doRequest(ctx, http.MethodPost, path, body, limit, result)
 }
 
 func (c *Client) put(ctx context.Context, path string, body, result interface{}) error {
-	return c.doRequest(ctx, http.MethodPut, path, body, result)
+	return c.doRequest(ctx, http.MethodPut, path, body, httpbody.Small, result)
 }
 
 func (c *Client) delete(ctx context.Context, path string, result interface{}) error {
-	return c.doRequest(ctx, http.MethodDelete, path, nil, result)
+	return c.doRequest(ctx, http.MethodDelete, path, nil, httpbody.Small, result)
 }
 
-func (c *Client) doRequest(ctx context.Context, method, path string, body, result interface{}) error {
+// doRequest sends a request to the API and decodes its answer, of at most
+// limit bytes (see the httpbody caps), into result.
+func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, limit int64, result interface{}) error {
 	var payload []byte
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
@@ -513,7 +594,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	defer resp.Body.Close()
 
 	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, limit)
 	if err != nil {
 		return NewNetworkError("failed to read response body", err)
 	}
@@ -525,7 +606,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 
 	// Parse successful response
 	if result != nil && len(respBody) > 0 {
-		if err := json.Unmarshal(respBody, result); err != nil {
+		if err := httpbody.Unmarshal(respBody, result); err != nil {
 			return NewSerializationError("failed to unmarshal response", err)
 		}
 	}
@@ -533,40 +614,64 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body, resul
 	return nil
 }
 
-// nextTxNonce returns the nonce the DID's next transaction must carry: one past
-// the account nonce the API reports at /account/{did}/nonce.
-func (c *Client) nextTxNonce(ctx context.Context, did string) (uint64, error) {
-	var envelope struct {
-		Data *struct {
-			Nonce uint64 `json:"nonce"`
-		} `json:"data"`
-		Error *string `json:"error"`
-	}
-	if err := c.get(ctx, fmt.Sprintf("/account/%s/nonce", did), &envelope); err != nil {
-		return 0, err
-	}
-	if envelope.Data == nil {
-		message := "no nonce in /account response"
-		if envelope.Error != nil {
-			message = *envelope.Error
+// apiEnvelope is the body most API routes answer with:
+// {"success": bool, "data": <the result>, "error": <message or null>}.
+type apiEnvelope struct {
+	Success bool            `json:"success"`
+	Data    json.RawMessage `json:"data"`
+	Error   *string         `json:"error"`
+}
+
+// decode returns the API's error when it reports one, else decodes data into
+// result (a null or absent data leaves result as it is).
+func (env *apiEnvelope) decode(result interface{}) error {
+	if !env.Success || env.Error != nil {
+		message := "the API reported a failure without a message"
+		if env.Error != nil && *env.Error != "" {
+			message = *env.Error
 		}
-		return 0, NewValidationError(message)
+		if strings.Contains(strings.ToLower(message), "not found") {
+			return &WillowError{Type: ErrorTypeNotFound, Message: message}
+		}
+		return NewAPIError(message)
 	}
-	return envelope.Data.Nonce + 1, nil
+	if result == nil || len(env.Data) == 0 || string(env.Data) == "null" {
+		return nil
+	}
+	if err := json.Unmarshal(env.Data, result); err != nil {
+		return NewSerializationError("failed to unmarshal response data", err)
+	}
+	return nil
 }
 
-// submitTx posts a JSON transaction to the API's /tx/submit, which hands it to
-// CheckTx, and returns an error unless CheckTx accepted it.
-func (c *Client) submitTx(ctx context.Context, tx interface{}) error {
-	body, err := json.Marshal(tx)
-	if err != nil {
-		return NewSerializationError("failed to marshal transaction", err)
-	}
-	return c.submitTxBytes(ctx, body)
+// getData GETs an API route that answers with the envelope, its answer small
+// (see httpbody.Small), and decodes its data into result.
+func (c *Client) getData(ctx context.Context, path string, result interface{}) error {
+	return c.requestData(ctx, http.MethodGet, path, nil, httpbody.Small, result)
 }
 
-// submitTxBytes is submitTx for a transaction already encoded as JSON.
-func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
+// postData POSTs to an API route that answers with the envelope, reading at
+// most limit bytes of its answer, and decodes its data into result.
+func (c *Client) postData(ctx context.Context, path string, body interface{}, limit int64, result interface{}) error {
+	return c.requestData(ctx, http.MethodPost, path, body, limit, result)
+}
+
+func (c *Client) requestData(ctx context.Context, method, path string, body interface{}, limit int64, result interface{}) error {
+	var env apiEnvelope
+	if err := c.doRequest(ctx, method, path, body, limit, &env); err != nil {
+		return err
+	}
+	return env.decode(result)
+}
+
+// postTx posts a JSON transaction to the API's /tx/submit, which hands it to
+// CheckTx, once: a transaction that reached the mempool before a 5xx would be
+// sent twice by a retry. It returns the transaction's hash when CheckTx
+// accepted it, an error otherwise, and what the answer leaves did's nonce as:
+// accepted; given back after a 4xx (the API refused the body before CheckTx)
+// or a refusal that doesn't say the nonce is held or used; or unknown after a
+// network error or a 5xx, when the transaction may have reached the node.
+func (c *Client) postTx(ctx context.Context, body []byte, did string, nonce uint64) (string, nonceOutcome, error) {
 	var envelope struct {
 		Success bool `json:"success"`
 		Data    *struct {
@@ -576,38 +681,41 @@ func (c *Client) submitTxBytes(ctx context.Context, body []byte) error {
 		} `json:"data"`
 		Error *string `json:"error"`
 	}
-	// Sent once: a transaction that reached the mempool before a 5xx would be
-	// resubmitted by a retry.
 	req, err := c.newAPIRequest(ctx, http.MethodPost, "/tx/submit", body)
 	if err != nil {
-		return err
+		return "", nonceFree, err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return NewNetworkError("transaction submission failed", err)
+		return "", nonceUnknown, NewNetworkError("transaction submission failed", err)
 	}
 	defer resp.Body.Close()
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, httpbody.Small)
 	if err != nil {
-		return NewNetworkError("failed to read /tx/submit response", err)
+		return "", nonceUnknown, NewNetworkError("failed to read /tx/submit response", err)
 	}
 	if resp.StatusCode >= 400 {
-		return c.handleErrorResponse(resp.StatusCode, respBody)
+		outcome := nonceUnknown
+		if resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout {
+			outcome = nonceFree
+		}
+		return "", outcome, c.handleErrorResponse(resp.StatusCode, respBody)
 	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
-		return NewSerializationError("failed to parse /tx/submit response", err)
+	if err := httpbody.Unmarshal(respBody, &envelope); err != nil {
+		return "", nonceUnknown, NewSerializationError("failed to parse /tx/submit response", err)
 	}
 	if !envelope.Success || envelope.Data == nil {
 		message := "transaction submission failed"
 		if envelope.Error != nil {
 			message = *envelope.Error
 		}
-		return NewTransactionError(message, "", 0)
+		return "", nonceUnknown, NewTransactionError(message, "", 0)
 	}
 	if envelope.Data.Code != 0 {
-		return NewTransactionError(envelope.Data.Log, envelope.Data.TxHash, envelope.Data.Code)
+		return envelope.Data.TxHash, refusalOutcome(envelope.Data.Log, did, nonce),
+			NewTransactionError(envelope.Data.Log, envelope.Data.TxHash, envelope.Data.Code)
 	}
-	return nil
+	return envelope.Data.TxHash, nonceAccepted, nil
 }
 
 // newAPIRequest builds one attempt of a JSON request to the API, signed by the
@@ -662,9 +770,11 @@ func (c *Client) signAPIRequest(req *http.Request, payload []byte) error {
 	return nil
 }
 
-// carriesReadRights reports whether a request is a read of subgrove data, the
-// reads the API can gate by a DID's read rights: GET /data/{sg}/{key}, GET
-// /proof/{sg}/{key}, POST /query/{sg}, /sql/{sg}, /graphql/{sg}, and POST /a2a.
+// carriesReadRights reports whether a request is a read the API gates by the
+// DID a replay-protected signature proves: GET /data/{sg}/{key}, GET
+// /proof/{sg}/{key}, the key-grant reads (GET /key-grants/{sg},
+// /key-grants/{sg}/{did}, and /proof/key-grant/{sg}/{did}), POST /query/{sg},
+// /sql/{sg}, /graphql/{sg}, and POST /a2a.
 func carriesReadRights(method, target string) bool {
 	path := target
 	if q := strings.IndexByte(path, '?'); q >= 0 {
@@ -673,7 +783,15 @@ func carriesReadRights(method, target string) bool {
 	segments := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch method {
 	case http.MethodGet:
-		return len(segments) == 3 && (segments[0] == "data" || segments[0] == "proof")
+		switch segments[0] {
+		case "data":
+			return len(segments) == 3
+		case "proof":
+			return len(segments) == 3 || (len(segments) == 4 && segments[1] == "key-grant")
+		case "key-grants":
+			return len(segments) == 2 || len(segments) == 3
+		}
+		return false
 	case http.MethodPost:
 		switch segments[0] {
 		case "query", "sql", "graphql":
@@ -764,7 +882,7 @@ func (c *Client) handleErrorResponse(statusCode int, body []byte) error {
 		case http.StatusForbidden:
 			return NewPermissionDeniedError(message)
 		case http.StatusNotFound:
-			return NewNotFoundError(message)
+			return &WillowError{Type: ErrorTypeNotFound, Message: message}
 		case http.StatusBadRequest:
 			return NewValidationError(message)
 		default:

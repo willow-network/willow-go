@@ -191,7 +191,12 @@ func TestClientSignsAPIRequestsWithANonce(t *testing.T) {
 			t.Errorf("retried body lost: %q", body)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{}`))
+		if strings.HasPrefix(r.URL.Path, "/sql/") {
+			// SQL answers with the result itself.
+			_, _ = w.Write([]byte(`{}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"data":{},"error":null}`))
 	}))
 	defer srv.Close()
 
@@ -256,13 +261,16 @@ func TestOnlyReadsWithRightsAreNonceSigned(t *testing.T) {
 		{"POST", "/sql/sg", true},
 		{"POST", "/graphql/sg", true},
 		{"POST", "/a2a", true},
-		{"GET", "/proof/key-grant/sg/did:willow:a", false},
+		// The API serves key grants only to a DID a replay-protected signature proves.
+		{"GET", "/proof/key-grant/sg/did:willow:a", true},
+		{"GET", "/key-grants/sg/did:willow:a", true},
+		{"GET", "/key-grants/sg", true},
 		{"GET", "/proof/file/sg/k", false},
 		{"GET", "/did/did:willow:a/permissions", false},
 		{"GET", "/subgroves", false},
 		{"PUT", "/data/sg/k", false},
 		{"POST", "/tx/submit", false},
-		{"GET", "/key-grants/sg/did:willow:a", false},
+		{"GET", "/key-grants/sg/did:willow:a/x", false},
 	}
 	for _, c := range cases {
 		if got := carriesReadRights(c.method, c.target); got != c.want {

@@ -1,12 +1,11 @@
 // Data operations example for the Willow Go SDK
 //
 // This example demonstrates:
-// - Storing single items
-// - Batch storing multiple items
-// - Updating data
-// - Deleting data
-// - Querying with filters
-// - Verified vs unverified operations
+// - Storing items, each a signed StoreData transaction
+// - Reading them back
+// - Querying with a filter
+// - The writes this SDK doesn't build (update, delete), which return an
+//   unsupported error naming the supported path
 //
 // Run with: go run ./examples/data_operations
 
@@ -15,8 +14,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -27,8 +28,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// Setup: Create client and authenticate
-	client, err := willow.NewClient("http://localhost:3031")
+	// Setup: Create client and authenticate. This example has writes in
+	// flight together, so it sets the CometBFT RPC URL: the client then reads
+	// which nonces above the account nonce are used, and WaitUntilLanded sees
+	// a write land even while an earlier one is pending.
+	client, err := willow.NewClient("http://localhost:3031",
+		willow.WithRPCURL("http://localhost:26657"))
 	if err != nil {
 		log.Fatalf("Failed to create client: %v", err)
 	}
@@ -39,7 +44,6 @@ func main() {
 		log.Fatalf("Failed to generate identity: %v", err)
 	}
 
-	client.RegisterDID(ctx, identity.DidDocument)
 	client.SetIdentity(identity)
 	fmt.Printf("Identity set for: %s\n\n", identity.DID())
 
@@ -54,15 +58,22 @@ func main() {
 		"in_stock": true,
 	}
 
-	err = client.Data.StoreItem(ctx, subgroveID, "product-1", product1)
+	write, err := client.Data.StoreItem(ctx, subgroveID, "product-1", product1)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Stored product-1")
+		// Submitted: CheckTx accepted it. It is applied, or refused, in its
+		// block; wait for its nonce to land before reading it back.
+		fmt.Printf("   Submitted product-1 (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitForNonce(ctx, client, write)
 	}
 
-	// 2. Batch store multiple items
-	fmt.Println("\n2. Batch storing items...")
+	// 2. Store more items. The API has no batch write: each item is its own
+	// StoreData transaction under its own nonce, so they can be in flight
+	// together (up to 24 per identity) and land in any order. Wait for each
+	// nonce to land before reading them. A write whose error has MayLand set
+	// is sent again under its own nonce (WithNonce), so it runs at most once.
+	fmt.Println("\n2. Storing more items...")
 	items := []willow.StoreRequest{
 		{
 			Key: "product-2",
@@ -93,26 +104,37 @@ func main() {
 		},
 	}
 
-	err = client.Data.BatchStore(ctx, subgroveID, items)
-	if err != nil {
-		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Println("   Stored 3 products in batch")
+	var writes []*willow.WriteResult
+	for _, item := range items {
+		write, err := client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data)
+		var werr *willow.WriteError
+		if errors.As(err, &werr) && werr.MayLand {
+			write, err = client.Data.StoreItem(ctx, subgroveID, item.Key, item.Data, willow.WithNonce(werr.Nonce))
+		}
+		if err != nil {
+			fmt.Printf("   Note: %s: %v\n", item.Key, err)
+			continue
+		}
+		fmt.Printf("   Submitted %s (nonce %d)\n", item.Key, write.Nonce)
+		writes = append(writes, write)
+	}
+	for _, write := range writes {
+		waitForNonce(ctx, client, write)
 	}
 
-	// 3. Get with proof verification (secure by default)
-	fmt.Println("\n3. Get with proof verification...")
+	// 3. Get (the API's data route carries no proof; GetProof fetches one)
+	fmt.Println("\n3. Get...")
 	response, err := client.Data.Get(ctx, subgroveID, "product-1")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Retrieved and VERIFIED:")
+		fmt.Println("   Retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 
-	// 4. Get without verification (faster)
-	fmt.Println("\n4. Get without verification (unverified)...")
+	// 4. Get asking for no proof
+	fmt.Println("\n4. GetUnverified (asking for no proof)...")
 	response, err = client.Data.GetUnverified(ctx, subgroveID, "product-2")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
@@ -139,15 +161,15 @@ func main() {
 		fmt.Println("   Updated product-1")
 	}
 
-	// 6. Query with filters (verified)
-	fmt.Println("\n6. Query with filters (verified)...")
+	// 6. Query with a filter (the API's /query applies one equality filter).
+	// The documents are the API's, unverified.
+	fmt.Println("\n6. Query with a filter...")
 	query := willow.NewQueryBuilder().
 		Equals("category", "electronics").
-		Equals("in_stock", true).
 		Limit(10).
 		Build()
 
-	queryResponse, err := client.Data.Query(ctx, subgroveID, query)
+	queryResponse, err := client.Data.QueryUnverified(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
@@ -158,15 +180,11 @@ func main() {
 		}
 	}
 
-	// 7. Query without verification (faster)
-	fmt.Println("\n7. Query without verification...")
-	query = willow.NewQueryBuilder().Limit(5).Build()
-
-	queryResponse, err = client.Data.QueryUnverified(ctx, subgroveID, query)
-	if err != nil {
+	// 7. Data.Query would verify the query's proof against the chain, which
+	// this SDK can't do, so it returns an unsupported error and sends nothing.
+	fmt.Println("\n7. Verified query...")
+	if _, err := client.Data.Query(ctx, subgroveID, query); willow.IsUnsupported(err) {
 		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Printf("   Found %d documents (unverified)\n", len(queryResponse.Results))
 	}
 
 	// 8. Delete data
@@ -178,24 +196,39 @@ func main() {
 		fmt.Println("   Deleted product-3")
 	}
 
-	// 9. Compare root hashes
+	// 9. Compare root hashes. Both are the API's values, unverified: the app
+	// hash of the latest block as its CometBFT node reports it, and its
+	// database's current root.
 	fmt.Println("\n9. Comparing root hashes...")
-	verifiedRoot, err1 := client.GetVerifiedRootHash(ctx)
+	appHash, err1 := client.GetLatestAppHash(ctx)
 	localRoot, err2 := client.GetRootHash(ctx)
 
 	if err1 == nil && err2 == nil {
-		fmt.Printf("   Verified root: %s...\n", truncate(verifiedRoot, 16))
-		fmt.Printf("   Local root:    %s...\n", truncate(localRoot, 16))
-		if verifiedRoot == localRoot {
-			fmt.Println("   Node is in sync with consensus")
+		fmt.Printf("   Latest app hash: %s...\n", truncate(appHash, 16))
+		fmt.Printf("   Local root:      %s...\n", truncate(localRoot, 16))
+		if appHash == localRoot {
+			fmt.Println("   The node's database root matches the latest app hash")
 		} else {
-			fmt.Println("   Node has pending changes")
+			fmt.Println("   The node's database root differs from the latest app hash")
 		}
 	} else {
 		fmt.Println("   Could not retrieve root hashes")
 	}
 
 	fmt.Println("\nData operations example complete!")
+}
+
+// waitForNonce waits up to 30 s for the chain to show a write's nonce used:
+// the write landed in a block. A write refused in its block also uses its
+// nonce, so read what it wrote to know it took effect.
+func waitForNonce(ctx context.Context, client *willow.Client, write *willow.WriteResult) {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+		fmt.Printf("   Note: %v\n", err)
+		return
+	}
+	fmt.Printf("   Nonce %d landed\n", write.Nonce)
 }
 
 func truncate(s string, maxLen int) string {

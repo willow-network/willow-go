@@ -2,9 +2,10 @@
 //
 // This example demonstrates:
 // - Creating a client
-// - Generating and registering a DID
+// - Generating a DID (registering it takes a RegisterDid transaction, which
+//   this SDK doesn't build)
 // - Setting identity for per-request signing
-// - Storing and retrieving data with automatic proof verification
+// - Storing data and reading it back (unverified)
 //
 // Run with: go run ./examples/basic_usage
 
@@ -15,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -43,21 +45,20 @@ func main() {
 	fmt.Printf("   DID: %s\n", identity.DID())
 	fmt.Printf("   Public Key ID: %s\n\n", identity.PublicKeyID())
 
-	// 3. Register the DID
+	// 3. Register the DID. A DID is registered on chain by a RegisterDid
+	// transaction, which this SDK does not build: register (and fund) it
+	// before it signs writes.
 	fmt.Println("3. Registering DID...")
-	_, err = client.RegisterDID(ctx, identity.DidDocument)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Println("   DID registered successfully")
-	}
+	fmt.Println("   A RegisterDid transaction (not built by this SDK) registers it")
+	fmt.Println()
 
 	// 4. Set identity for per-request signing
 	fmt.Println("4. Setting identity...")
 	client.SetIdentity(identity)
 	fmt.Println("   Identity set — all requests will be signed automatically")
 
-	// 5. Store data (requires an existing subgrove)
+	// 5. Store data: a signed StoreData transaction (requires an existing
+	// subgrove the identity may write to)
 	fmt.Println("5. Storing data...")
 	testData := map[string]interface{}{
 		"name":   "Alice",
@@ -65,26 +66,36 @@ func main() {
 		"active": true,
 	}
 
-	err = client.Data.StoreItem(ctx, "users", "alice", testData)
+	write, err := client.Data.StoreItem(ctx, "users", "alice", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Data stored successfully")
+		// Submitted: CheckTx accepted it. It is applied, or refused, in its
+		// block, so wait for it to land before reading it back.
+		fmt.Printf("   Submitted (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+			fmt.Printf("   Note: %v\n", err)
+		} else {
+			fmt.Println("   Landed")
+		}
+		cancel()
 	}
 
-	// 6. Retrieve data with automatic proof verification
-	fmt.Println("\n6. Retrieving data (with proof verification)...")
+	// 6. Retrieve data (the API's data route carries no proof; GetProof
+	// fetches one)
+	fmt.Println("\n6. Retrieving data...")
 	response, err := client.Data.Get(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Data retrieved and verified:")
+		fmt.Println("   Data retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 
-	// 7. Retrieve data without verification (faster)
-	fmt.Println("\n7. Retrieving data (without verification)...")
+	// 7. Retrieve data asking for no proof
+	fmt.Println("\n7. Retrieving data (asking for no proof)...")
 	response, err = client.Data.GetUnverified(ctx, "users", "alice")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)

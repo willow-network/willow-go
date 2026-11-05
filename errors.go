@@ -3,6 +3,8 @@ package willow
 import (
 	"errors"
 	"fmt"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // Error types for the Willow SDK.
@@ -18,6 +20,13 @@ var (
 
 	// ErrLightClientNotInitialized is returned when light client operations are attempted without initialization.
 	ErrLightClientNotInitialized = errors.New("light client not initialized")
+
+	// ErrAnswerTooLarge is the cause of the error for an HTTP answer the SDK
+	// refuses for its size (errors.Is(err, ErrAnswerTooLarge)): longer than
+	// its route's limit, or holding more JSON than the SDK decodes. The
+	// consensus, lightclient, and erc8004 packages' errors match it too.
+	// Ask for less where the request sets an answer's size.
+	ErrAnswerTooLarge = httpbody.ErrTooLarge
 )
 
 // WillowError represents an error from the Willow SDK.
@@ -45,6 +54,11 @@ const (
 	ErrorTypeConfig           ErrorType = "config"
 	ErrorTypeConsensus        ErrorType = "consensus"
 	ErrorTypeTransaction      ErrorType = "transaction"
+	// ErrorTypeAPI is a request the API answered with success false.
+	ErrorTypeAPI ErrorType = "api"
+	// ErrorTypeUnsupported is an operation the network serves no route or
+	// transaction for, or one this SDK does not build.
+	ErrorTypeUnsupported ErrorType = "unsupported"
 )
 
 // Error implements the error interface.
@@ -120,6 +134,25 @@ func NewNotFoundError(resource string) *WillowError {
 	return &WillowError{
 		Type:    ErrorTypeNotFound,
 		Message: fmt.Sprintf("%s not found", resource),
+	}
+}
+
+// NewAPIError creates an error for a request the API answered with success
+// false, carrying the API's message.
+func NewAPIError(message string) *WillowError {
+	return &WillowError{
+		Type:    ErrorTypeAPI,
+		Message: message,
+	}
+}
+
+// NewUnsupportedError creates an error for an operation the network serves no
+// route or transaction for, or one this SDK does not build. The message names
+// the supported path.
+func NewUnsupportedError(message string) *WillowError {
+	return &WillowError{
+		Type:    ErrorTypeUnsupported,
+		Message: message,
 	}
 }
 
@@ -241,6 +274,15 @@ func IsNotFound(err error) bool {
 	var we *WillowError
 	if errors.As(err, &we) {
 		return we.Type == ErrorTypeNotFound
+	}
+	return false
+}
+
+// IsUnsupported checks if the error is an unsupported-operation error.
+func IsUnsupported(err error) bool {
+	var we *WillowError
+	if errors.As(err, &we) {
+		return we.Type == ErrorTypeUnsupported
 	}
 	return false
 }

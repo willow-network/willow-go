@@ -2,18 +2,21 @@ package willow
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/willow-network/willow-go/consensus"
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
-// QuerySource tells the routing layer where to send a query.
+// QuerySource tells the routing layer where to send a query. Whichever
+// backend answers, the answer is returned unverified.
 //
-//   - QuerySourceValidator: consensus-verified chain-tip. Every row is
-//     Merkle-provable. Fails fast for VerifyOnly subgroves.
+//   - QuerySourceValidator: the API, which serves the chain-tip state. Fails
+//     fast for VerifyOnly subgroves.
 //   - QuerySourceIndexer: full history + analytics via an indexer.
 //   - QuerySourceAuto (default): indexer if one serves this subgrove, else
 //     validator. Sets Fallback=true when it falls back.
@@ -147,7 +150,7 @@ func (d *Indexers) List(ctx context.Context) ([]IndexerInfo, error) {
 		Success bool          `json:"success"`
 		Data    []IndexerInfo `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &envelope); err != nil {
 		return nil, fmt.Errorf("decode /indexers response: %w", err)
 	}
 
@@ -196,7 +199,7 @@ func syntheticEntry(url string) IndexerInfo {
 	return IndexerInfo{
 		IndexerDID:       "explicit-override",
 		Subgroves:        nil,
-		StakeAmount:      0,
+		StakeAmount:      consensus.Uint128{},
 		Endpoint:         url,
 		QueryEndpoint:    url,
 		Status:           "active",
@@ -219,12 +222,19 @@ func (e *ValidatorHasNoDataError) Error() string {
 
 // NoIndexersReachableError is returned when QuerySourceIndexer was
 // requested but either no indexer serves the subgrove or every candidate
-// failed.
+// failed. Errs holds each candidate's error, in the order they were tried;
+// errors.Is and errors.As look through them.
 type NoIndexersReachableError struct {
 	SubgroveID string
 	Details    string
+	Errs       []error
 }
 
 func (e *NoIndexersReachableError) Error() string {
 	return fmt.Sprintf("no indexer could serve subgrove %q: %s", e.SubgroveID, e.Details)
+}
+
+// Unwrap returns Errs.
+func (e *NoIndexersReachableError) Unwrap() []error {
+	return e.Errs
 }

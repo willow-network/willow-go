@@ -13,7 +13,11 @@ package willow
 //
 // The client rebuilds the Log set from {address, topics, data} and re-hashes it
 // with VerifyServedEvents. A true result means the served set is exactly the
-// matched events the on-chain commitment binds (no drop, add, or reorder).
+// matched events the commitment binds (no drop, add, or reorder), with the
+// commitment as the RPC node reports it: the node's ABCI answer for the anchor
+// carries no proof, so the SDK trusts that node for the commitment (and
+// checks only that its answer is for the subgrove and block asked for). It
+// doesn't trust the indexer.
 
 import (
 	"bytes"
@@ -21,9 +25,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // matchedLogJSON mirrors the indexer's served IndexedLog. Only the three
@@ -89,7 +94,7 @@ func parseMatchedLog(m matchedLogJSON) (Log, error) {
 // slice in the order served — the same order the commitment hashes them.
 func parseMatchedLogs(body []byte) ([]Log, error) {
 	var resp matchedLogsResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	if err := httpbody.Unmarshal(body, &resp); err != nil {
 		return nil, NewSerializationError("failed to unmarshal matched-logs response", err)
 	}
 	logs := make([]Log, len(resp.MatchedLogs))
@@ -107,6 +112,13 @@ func parseMatchedLogs(body []byte) ([]Log, error) {
 // CometBFT ABCI store query against the validator RPC endpoint. It returns the
 // 32-byte commitment on success. A non-zero ABCI response code (e.g. no anchor
 // stored for the block) is surfaced as an error: the block is not verifiable.
+//
+// The commitment is the RPC node's answer, which the SDK trusts: the node
+// answers this query with no proof, so nothing binds it to a verified header.
+// The RPC node is the one WithRPCURL names; without it, the API URL with its
+// :3031 replaced by :26657 (the API's host), or, when the API URL has no
+// :3031, the API URL itself (see RPCEndpoint). An answer about another
+// subgrove or block than the one asked for is an error.
 func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, blockNumber uint64) ([32]byte, error) {
 	var out [32]byte
 
@@ -152,7 +164,7 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 			Message string `json:"message"`
 		} `json:"error"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&rpcResp); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &rpcResp); err != nil {
 		return out, NewSerializationError("failed to decode abci_query response", err)
 	}
 	if rpcResp.Error != nil {
@@ -174,6 +186,10 @@ func (c *Client) FetchEventsCommitment(ctx context.Context, subgroveID string, b
 	}
 	if err := json.Unmarshal(valueBytes, &anchor); err != nil {
 		return out, NewSerializationError("failed to unmarshal events_commitment anchor", err)
+	}
+	if anchor.SubgroveID != subgroveID || anchor.BlockNumber != blockNumber {
+		return out, NewValidationError(fmt.Sprintf("the events_commitment anchor answered is for subgrove %q block %d, not subgrove %q block %d",
+			anchor.SubgroveID, anchor.BlockNumber, subgroveID, blockNumber))
 	}
 
 	commitment, err := hex.DecodeString(strings.TrimPrefix(anchor.EventsCommitment, "0x"))
@@ -225,7 +241,7 @@ func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockN
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, httpbody.Large)
 	if err != nil {
 		return nil, NewNetworkError("failed to read matched-logs response", err)
 	}
@@ -237,11 +253,15 @@ func (c *Client) FetchMatchedLogs(ctx context.Context, subgroveID string, blockN
 	return parseMatchedLogs(respBody)
 }
 
-// VerifyBlockCompleteness performs the full client-side completeness check for a
-// (subgrove, block): it fetches the on-chain events_commitment anchor and the
-// indexer's matched-log preimage, then verifies the latter re-hashes to the
-// former. It returns true only when the served event set is provably the
-// complete, untampered filter-matched set the chain attests to.
+// VerifyBlockCompleteness performs the client-side completeness check for a
+// (subgrove, block): it fetches the events_commitment anchor and the indexer's
+// matched-log preimage, then verifies the latter re-hashes to the former. It
+// returns true only when the served event set is exactly the filter-matched
+// set the commitment binds. The commitment is the RPC node's answer, which the
+// SDK trusts (see FetchEventsCommitment): the check removes trust in the
+// indexer, not in that node. Without WithRPCURL that node is the API's host
+// (the API URL with :3031 replaced by :26657), or the API itself when its URL
+// has no :3031, so the check then trusts the API's operator.
 //
 // An error is returned when either fetch fails or the block is not verifiable
 // (no on-chain anchor, or the indexer retained no matched logs). A non-nil

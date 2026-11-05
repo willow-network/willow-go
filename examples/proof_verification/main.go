@@ -1,11 +1,10 @@
 // Proof verification example for the Willow Go SDK
 //
 // This example demonstrates:
-// - Automatic proof verification (default behavior)
-// - Comparing verified vs unverified operations
-// - Manual proof retrieval and verification
+// - What a proof the API returns is of, and what the SDK verifies
+// - Unverified reads and queries
+// - Proof retrieval
 // - Root hash comparison
-// - Light client configuration for trustless verification
 //
 // Run with: go run ./examples/proof_verification
 
@@ -16,6 +15,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	willow "github.com/willow-network/willow-go"
 )
@@ -45,11 +45,10 @@ func main() {
 	}
 	fmt.Printf("   DID: %s\n", identity.DID())
 
-	_, err = client.RegisterDID(ctx, identity.DidDocument)
-	if err != nil {
+	// A DID is registered on chain by a RegisterDid transaction, which this
+	// SDK does not build; RegisterDID says so.
+	if _, err = client.RegisterDID(ctx, identity.DidDocument); err != nil {
 		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Println("   DID registered")
 	}
 
 	client.SetIdentity(identity)
@@ -66,21 +65,23 @@ func main() {
 		"tags":    []string{"demo", "proof", "verification"},
 	}
 
-	err = client.Data.StoreItem(ctx, subgroveID, "test-key", testData)
+	write, err := client.Data.StoreItem(ctx, subgroveID, "test-key", testData)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Data stored successfully")
+		// Submitted: CheckTx accepted it. Wait for it to land before reading.
+		fmt.Printf("   Submitted (nonce %d, tx %s)\n", write.Nonce, write.TxHash)
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		if err := client.WaitUntilLanded(waitCtx, write.DID, write.Nonce); err != nil {
+			fmt.Printf("   Note: %v\n", err)
+		}
+		cancel()
 	}
 	fmt.Println()
 
-	// 4. Get with automatic verification (default)
-	fmt.Println("4. Get with automatic verification...")
-	fmt.Println("   The SDK automatically:")
-	fmt.Println("   - Requests the data with proof from the API")
-	fmt.Println("   - Verifies the proof against the light client (if configured)")
-	fmt.Println("   - Compares against the consensus root hash")
-	fmt.Println("   - Returns error if verification fails")
+	// 4. Get. The API's data route answers with the value alone; step 8
+	// fetches the key's proof.
+	fmt.Println("4. Get...")
 	fmt.Println()
 
 	response, err := client.Data.Get(ctx, subgroveID, "test-key")
@@ -88,15 +89,13 @@ func main() {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		dataJSON, _ := json.MarshalIndent(response.Data, "   ", "  ")
-		fmt.Println("   Data retrieved and VERIFIED:")
+		fmt.Println("   Data retrieved:")
 		fmt.Printf("   %s\n", dataJSON)
 	}
 	fmt.Println()
 
-	// 5. Get without verification (faster)
-	fmt.Println("5. Get without verification (unverified)...")
-	fmt.Println("   Skips all proof verification for maximum performance")
-	fmt.Println("   Use only when you trust the node")
+	// 5. Get, asking the API for no proof
+	fmt.Println("5. GetUnverified...")
 	fmt.Println()
 
 	response, err = client.Data.GetUnverified(ctx, subgroveID, "test-key")
@@ -109,42 +108,38 @@ func main() {
 	}
 	fmt.Println()
 
-	// 6. Query with verification
-	fmt.Println("6. Query with automatic verification...")
-	query := willow.NewQueryBuilder().Limit(5).IncludeProof().Build()
+	// 6. Verified query. Data.Query would verify the query's proof against
+	// the chain, which this SDK can't do, so it returns an unsupported error
+	// and sends nothing.
+	fmt.Println("6. Verified query...")
+	query := willow.NewQueryBuilder().Limit(5).Build()
 
-	queryResponse, err := client.Data.Query(ctx, subgroveID, query)
-	if err != nil {
+	if _, err := client.Data.Query(ctx, subgroveID, query); willow.IsUnsupported(err) {
 		fmt.Printf("   Note: %v\n", err)
-	} else {
-		fmt.Printf("   Found %d results\n", len(queryResponse.Results))
-		if len(queryResponse.Proof) > 0 {
-			fmt.Println("   Proof was included and verified")
-		}
 	}
 	fmt.Println()
 
-	// 7. Query without verification (for comparison)
+	// 7. Query without verification
 	fmt.Println("7. Query without verification (unverified)...")
-	queryUnverified := willow.NewQueryBuilder().Limit(5).Build()
-
-	queryResponse, err = client.Data.QueryUnverified(ctx, subgroveID, queryUnverified)
+	queryResponse, err := client.Data.QueryUnverified(ctx, subgroveID, query)
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
 		fmt.Printf("   Found %d results\n", len(queryResponse.Results))
-		fmt.Printf("   Proof included: %v\n", len(queryResponse.Proof) > 0)
 	}
 	fmt.Println()
 
-	// 8. Manual proof retrieval
-	fmt.Println("8. Manual proof retrieval...")
+	// 8. Proof retrieval. The proof is of the state after block proof.Height,
+	// so its root is the app_hash of the CometBFT header at proof.Height+1.
+	fmt.Println("8. Proof retrieval...")
 	proof, err := client.Data.GetProof(ctx, subgroveID, "test-key")
 	if err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Proof retrieved successfully")
-		fmt.Printf("   Proof size: %d bytes\n", len(proof.Proof))
+		fmt.Printf("   Proof of %d bytes, state after block %d (unverified)\n", len(proof.Proof), proof.Height)
+		if err := client.Data.VerifyProof(ctx, proof); willow.IsUnsupported(err) {
+			fmt.Printf("   Note: %v\n", err)
+		}
 	}
 	fmt.Println()
 
@@ -161,61 +156,37 @@ func main() {
 		}
 	}
 
-	verifiedRoot, err := client.GetVerifiedRootHash(ctx)
+	// The latest block's app hash as the API's CometBFT node reports it: the
+	// API's value, which the SDK doesn't verify.
+	appHash, err := client.GetLatestAppHash(ctx)
 	if err != nil {
-		fmt.Printf("   Verified root: Error - %v\n", err)
+		fmt.Printf("   Latest app hash: Error - %v\n", err)
 	} else {
-		if len(verifiedRoot) > 32 {
-			fmt.Printf("   Verified root: %s...\n", verifiedRoot[:32])
+		if len(appHash) > 32 {
+			fmt.Printf("   Latest app hash: %s...\n", appHash[:32])
 		} else {
-			fmt.Printf("   Verified root: %s\n", verifiedRoot)
+			fmt.Printf("   Latest app hash: %s\n", appHash)
 		}
 
-		if localRoot == verifiedRoot {
-			fmt.Println("   Node is in sync with consensus")
+		if localRoot == appHash {
+			fmt.Println("   The node's database root matches the latest app hash")
 		} else {
-			fmt.Println("   Node has pending changes")
+			fmt.Println("   The node's database root differs from the latest app hash")
 		}
 	}
 	fmt.Println()
 
-	// 10. Light client status
-	fmt.Println("10. Light client status...")
-	if client.HasLightClient() {
-		fmt.Println("   Light client: ENABLED")
-		fmt.Println("   All Get() and Query() calls are verified against consensus")
-	} else {
-		fmt.Println("   Light client: NOT CONFIGURED")
-		fmt.Println("   To enable trustless verification, configure a light client:")
-		fmt.Println()
-		fmt.Println("   lc, _ := lightclient.NewLightClient(lightclient.Config{")
-		fmt.Println("       ChainID:            \"willow-chain\",")
-		fmt.Println("       ValidatorEndpoints: []string{\"http://localhost:26657\"},")
-		fmt.Println("       TrustThreshold:     lightclient.TrustThreshold{Numerator: 2, Denominator: 3},")
-		fmt.Println("       TrustingPeriod:     24 * time.Hour,")
-		fmt.Println("   })")
-		fmt.Println("   client, _ := willow.NewClient(apiURL, willow.WithLightClient(lc))")
-	}
+	// 10. Summary
+	fmt.Println("10. Proof verification summary")
 	fmt.Println()
-
-	// 11. Summary
-	fmt.Println("11. Proof verification summary")
-	fmt.Println()
-	fmt.Println("   AUTOMATIC VERIFICATION (recommended):")
-	fmt.Println("   - Use Get() and Query() methods")
-	fmt.Println("   - Proofs verified against consensus root hash")
-	fmt.Println("   - Returns error if verification fails")
-	fmt.Println("   - Provides cryptographic guarantee of data integrity")
-	fmt.Println()
-	fmt.Println("   WITH LIGHT CLIENT (trustless):")
-	fmt.Println("   - Configure with WithLightClient() option")
-	fmt.Println("   - Verifies validator signatures (2/3+ threshold)")
-	fmt.Println("   - No trust required in any single node")
-	fmt.Println()
-	fmt.Println("   SKIP VERIFICATION (use with caution):")
-	fmt.Println("   - Use GetUnverified() and QueryUnverified()")
-	fmt.Println("   - Maximum performance")
-	fmt.Println("   - Only use with trusted nodes")
+	fmt.Println("   A proof the API returns is of the state after block Height,")
+	fmt.Println("   whose root is the app_hash of the CometBFT header at Height+1.")
+	fmt.Println("   Verifying it takes that header verified against the validators'")
+	fmt.Println("   commit signatures and a GroveDB verifier that reproduces the")
+	fmt.Println("   chain's root. The SDK doesn't provide these, so Data.Query and")
+	fmt.Println("   Data.VerifyProof return an unsupported error, and Get,")
+	fmt.Println("   GetUnverified, QueryUnverified, and GetProof return what the")
+	fmt.Println("   API sends, unverified.")
 	fmt.Println()
 
 	fmt.Println("Proof verification example complete!")

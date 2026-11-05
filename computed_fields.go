@@ -2,14 +2,14 @@
 //
 // Computed Fields Module
 //
-// This module provides SDK-layer computation of derived fields from proven data.
-// It enables drop-in compatibility with The Graph's query interfaces by computing
-// derived values (like price ratios) from cryptographically proven base data.
+// This module provides SDK-layer computation of derived fields from the values
+// a query returns. It enables drop-in compatibility with The Graph's query
+// interfaces by computing derived values (like price ratios) from base data.
 //
 // Design Philosophy:
-//   - GKR circuits prove the underlying data (reserves, volumes, balances)
 //   - Division and other derived calculations are done client-side
-//   - Same trust model: proven inputs + deterministic computation = trustworthy outputs
+//   - A derived value is exactly as trustworthy as the values it is computed
+//     from; the SDK returns query results unverified
 //   - Same API: queries return the same fields The Graph would return
 package willow
 
@@ -20,7 +20,7 @@ import (
 	"sync"
 )
 
-// ComputeFunction is a function that computes a derived value from a record's proven fields.
+// ComputeFunction is a function that computes a derived value from a record's fields.
 // Returns nil if the computation cannot be performed (e.g., division by zero).
 type ComputeFunction func(record map[string]interface{}) interface{}
 
@@ -30,7 +30,7 @@ type ComputedFieldDefinition struct {
 	Name string
 	// Description is a human-readable description of what this field represents.
 	Description string
-	// Dependencies are the proven fields this computation depends on.
+	// Dependencies are the record's fields this computation depends on.
 	Dependencies []string
 	// Compute is the computation function.
 	Compute ComputeFunction
@@ -194,10 +194,10 @@ func parseNumeric(value interface{}) (float64, bool) {
 
 // UniswapV2PairFields provides computed fields for Uniswap V2 pairs.
 //
-// These fields are computed from proven reserve data to match
-// The Graph's Uniswap V2 subgraph schema.
+// These fields are computed from the pair's reserves, as a query returns
+// them (unverified), to match The Graph's Uniswap V2 subgraph schema.
 //
-// Proven fields required:
+// Fields required:
 //   - reserve0: Token 0 reserve amount
 //   - reserve1: Token 1 reserve amount
 //   - token0.decimals: Token 0 decimals (optional, defaults to 18)
@@ -279,7 +279,8 @@ var UniswapV2PairFields = ComputedFieldSet{
 
 // UniswapV2TokenFields provides computed fields for Uniswap V2 tokens.
 //
-// These fields compute derived ETH prices from proven stablecoin pool reserves.
+// These fields compute derived ETH prices from stablecoin pool reserves, as a
+// query returns them (unverified).
 var UniswapV2TokenFields = ComputedFieldSet{
 	{
 		Name:         "derivedETH",

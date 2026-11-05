@@ -3,6 +3,7 @@ package consensus
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 )
 
 // ByteArray is a []byte with JSON marshaling as a number array.
@@ -76,6 +77,81 @@ type TxResult struct {
 	Data    json.RawMessage   `json:"data,omitempty"`
 }
 
+// BlockResult is CometBFT's /block answer: a block and its ID, as the RPC
+// node reports them. Nothing in it is verified.
+type BlockResult struct {
+	BlockID BlockID `json:"block_id"`
+	Block   Block   `json:"block"`
+}
+
+// BlockID names a block: its hash and its part set header, in hex.
+type BlockID struct {
+	Hash  string        `json:"hash"`
+	Parts PartSetHeader `json:"parts"`
+}
+
+// PartSetHeader is the count and Merkle root of a block's parts.
+type PartSetHeader struct {
+	Total uint32 `json:"total"`
+	Hash  string `json:"hash"`
+}
+
+// Block is a CometBFT block. Evidence is the block's evidence as the answer
+// carries it, as JSON.
+type Block struct {
+	Header     BlockHeader     `json:"header"`
+	Data       BlockData       `json:"data"`
+	Evidence   json.RawMessage `json:"evidence"`
+	LastCommit *Commit         `json:"last_commit"`
+}
+
+// BlockHeader is a block's header; hashes and the proposer's address are hex.
+type BlockHeader struct {
+	Version            BlockVersion `json:"version"`
+	ChainID            string       `json:"chain_id"`
+	Height             int64        `json:"height,string"`
+	Time               time.Time    `json:"time"`
+	LastBlockID        BlockID      `json:"last_block_id"`
+	LastCommitHash     string       `json:"last_commit_hash"`
+	DataHash           string       `json:"data_hash"`
+	ValidatorsHash     string       `json:"validators_hash"`
+	NextValidatorsHash string       `json:"next_validators_hash"`
+	ConsensusHash      string       `json:"consensus_hash"`
+	AppHash            string       `json:"app_hash"`
+	LastResultsHash    string       `json:"last_results_hash"`
+	EvidenceHash       string       `json:"evidence_hash"`
+	ProposerAddress    string       `json:"proposer_address"`
+}
+
+// BlockVersion is the block and app protocol versions a header names.
+type BlockVersion struct {
+	Block uint64 `json:"block,string"`
+	App   uint64 `json:"app,string"`
+}
+
+// BlockData holds a block's transactions, decoded from base64.
+type BlockData struct {
+	Txs [][]byte `json:"txs"`
+}
+
+// Commit is the validators' commit to a block: their signatures, each over
+// the block ID at Height and Round.
+type Commit struct {
+	Height     int64       `json:"height,string"`
+	Round      int32       `json:"round"`
+	BlockID    BlockID     `json:"block_id"`
+	Signatures []CommitSig `json:"signatures"`
+}
+
+// CommitSig is one validator's entry in a commit: BlockIDFlag 1 is absent, 2
+// a vote for the block, 3 a vote for nil. Signature is nil when absent.
+type CommitSig struct {
+	BlockIDFlag      int       `json:"block_id_flag"`
+	ValidatorAddress string    `json:"validator_address"`
+	Timestamp        time.Time `json:"timestamp"`
+	Signature        []byte    `json:"signature"`
+}
+
 // Transaction represents a generic transaction envelope.
 type Transaction struct {
 	Type string          `json:"type"`
@@ -90,12 +166,56 @@ type RegisterDidTx struct {
 	Nonce       uint64      `json:"nonce"`
 }
 
-// SubgroveDataStorage holds configuration for DataStorage mode.
+// ReadPricing is a subgrove's pricing for paid reads.
+type ReadPricing struct {
+	Enabled bool `json:"enabled"`
+	// PricePerQuery is in the smallest token unit (10^-18 WILL).
+	PricePerQuery Uint128 `json:"price_per_query"`
+	// OwnerRevenueShareBps is the owner's share of revenue in basis points
+	// (0-10000); the rest goes to the protocol treasury.
+	OwnerRevenueShareBps uint32 `json:"owner_revenue_share_bps"`
+}
+
+// SubgroveDataStorage holds configuration for DataStorage mode. Nil slices are
+// sent as empty lists, and a nil ReadPricing as null (no paid reads).
 type SubgroveDataStorage struct {
-	Name                  string   `json:"name"`
-	Writers               []string `json:"writers,omitempty"`
-	FreeReaders           []string `json:"free_readers,omitempty"`
-	ReadPricing           any      `json:"read_pricing,omitempty"`
+	Name        string       `json:"name"`
+	Writers     []string     `json:"writers"`
+	FreeReaders []string     `json:"free_readers"`
+	ReadPricing *ReadPricing `json:"read_pricing"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists.
+func (m SubgroveDataStorage) MarshalJSON() ([]byte, error) {
+	type plain SubgroveDataStorage
+	p := plain(m)
+	p.Writers = orEmpty(p.Writers)
+	p.FreeReaders = orEmpty(p.FreeReaders)
+	return json.Marshal(p)
+}
+
+// SubgroveFileStorage holds configuration for FileStorage mode. Nil slices are
+// sent as empty lists, and a nil ReadPricing as null (no paid downloads).
+type SubgroveFileStorage struct {
+	Name string `json:"name"`
+	// MaxFileSize is the largest file the subgrove accepts, in bytes.
+	MaxFileSize uint64 `json:"max_file_size"`
+	// ReplicationFactor is the least number of storage nodes holding each file.
+	ReplicationFactor uint8        `json:"replication_factor"`
+	Writers           []string     `json:"writers"`
+	FreeReaders       []string     `json:"free_readers"`
+	ReadPricing       *ReadPricing `json:"read_pricing"`
+	// RetentionPeriod is in seconds; 0 keeps files permanently.
+	RetentionPeriod uint64 `json:"retention_period"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists.
+func (m SubgroveFileStorage) MarshalJSON() ([]byte, error) {
+	type plain SubgroveFileStorage
+	p := plain(m)
+	p.Writers = orEmpty(p.Writers)
+	p.FreeReaders = orEmpty(p.FreeReaders)
+	return json.Marshal(p)
 }
 
 // RetentionWindow specifies how long real-time indexed data is retained on consensus nodes.
@@ -105,6 +225,9 @@ type RetentionWindow struct {
 }
 
 // SubgroveBlockchainIndexing holds configuration for BlockchainIndexing mode.
+//
+// Its fields don't encode the chain's indexing mode, so FormatRegisterSubgroveMessage
+// refuses a registration in this mode.
 type SubgroveBlockchainIndexing struct {
 	ManifestContent []byte           `json:"manifest_content,omitempty"`
 	WasmModules     []any            `json:"wasm_modules,omitempty"`
@@ -113,22 +236,86 @@ type SubgroveBlockchainIndexing struct {
 	RetentionWindow *RetentionWindow `json:"retention_window,omitempty"`
 }
 
-// SubgroveMode represents the mode of a subgrove: DataStorage or BlockchainIndexing.
-// Exactly one field should be non-nil.
+// SubgroveMode represents the mode of a subgrove: DataStorage, FileStorage, or
+// BlockchainIndexing. Exactly one field should be non-nil.
 type SubgroveMode struct {
 	DataStorage        *SubgroveDataStorage        `json:"DataStorage,omitempty"`
-	BlockchainIndexing *SubgroveBlockchainIndexing  `json:"BlockchainIndexing,omitempty"`
+	FileStorage        *SubgroveFileStorage        `json:"FileStorage,omitempty"`
+	BlockchainIndexing *SubgroveBlockchainIndexing `json:"BlockchainIndexing,omitempty"`
 }
 
-// RegisterSubgroveTx represents a subgrove registration transaction.
+// TeeType is a trusted execution environment a subgrove can require of
+// checkpoint submissions.
+type TeeType string
+
+// The TEE types the chain knows.
+const (
+	TeeAwsNitro TeeType = "AwsNitro"
+	TeeIntelSgx TeeType = "IntelSgx"
+	TeeAmdSev   TeeType = "AmdSev"
+)
+
+// CheckpointVerificationConfig is a subgrove's checkpoint verification
+// configuration.
+type CheckpointVerificationConfig struct {
+	// RequiredTEE, when set, requires checkpoint submissions to carry an
+	// attestation from this TEE type.
+	RequiredTEE *TeeType `json:"required_tee"`
+}
+
+// RegisterSubgroveTx represents a subgrove registration transaction, sent as
+// {"RegisterSubgrove": tx}. Every field is sent, so the chain decodes exactly
+// the values the signature covers: nil slices go as empty lists, a nil Mode as
+// the chain's default (DataStorage with an empty name and lists, no read
+// pricing), and other nil optional fields as null.
+//
+// It is signed over FormatRegisterSubgroveMessage (in the willow package),
+// whose Config line is the SHA-256 of RegisterSubgroveUnsignedBincode of the
+// JSON sent.
 type RegisterSubgroveTx struct {
-	SubgroveID  string        `json:"subgrove_id"`
-	Schema      string        `json:"schema"`
-	OwnerDid    string        `json:"owner_did"`
-	Mode        *SubgroveMode `json:"mode,omitempty"`
-	Signature   ByteArray        `json:"signature"`
-	PublicKeyID string        `json:"public_key_id"`
-	Nonce       uint64        `json:"nonce"`
+	SubgroveID  string `json:"subgrove_id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// Schema is the subgrove's document schema as JSON text, in the chain's
+	// form: {"version":1,"fields":{...},"indexes":[...],"required_fields":[...]}.
+	Schema   string   `json:"schema"`
+	OwnerDid string   `json:"owner_did"`
+	Admins   []string `json:"admins"`
+	// InitialFunding, when set, funds the subgrove in the same transaction (in
+	// the smallest token unit).
+	InitialFunding         *Uint128                     `json:"initial_funding"`
+	CheckpointVerification CheckpointVerificationConfig `json:"checkpoint_verification"`
+	Mode                   *SubgroveMode                `json:"mode"`
+	Privacy                *PrivacyConfig               `json:"privacy"`
+	InitialOwnerKeyGrant   *EncryptedKeyGrant           `json:"initial_owner_key_grant"`
+	// TemplateConfig is the chain's TemplateSubgroveConfig as JSON; nil sends null.
+	TemplateConfig json.RawMessage `json:"template_config"`
+	// ConfirmationDepth is the number of blocks held in the chain-tip buffer
+	// before submissions fire.
+	ConfirmationDepth         uint32    `json:"confirmation_depth"`
+	Signature                 ByteArray `json:"signature"`
+	PublicKeyID               string    `json:"public_key_id"`
+	Nonce                     uint64    `json:"nonce"`
+	CryptographicCompleteness bool      `json:"cryptographic_completeness"`
+}
+
+// MarshalJSON sends every field, nil slices as empty lists and a nil Mode as
+// the chain's default DataStorage (the chain refuses a null mode).
+func (tx RegisterSubgroveTx) MarshalJSON() ([]byte, error) {
+	type plain RegisterSubgroveTx
+	p := plain(tx)
+	p.Admins = orEmpty(p.Admins)
+	if p.Mode == nil {
+		p.Mode = &SubgroveMode{DataStorage: &SubgroveDataStorage{}}
+	}
+	return json.Marshal(p)
+}
+
+func orEmpty(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }
 
 // TransferTx represents a token transfer transaction.
@@ -142,15 +329,18 @@ type TransferTx struct {
 	Nonce       uint64 `json:"nonce"`
 }
 
-// DataStoreTx represents a data storage transaction.
+// DataStoreTx represents a data storage transaction, sent as {"StoreData": tx}.
 type DataStoreTx struct {
-	SubgroveID  string          `json:"subgrove_id"`
-	Key         string          `json:"key"`
-	Data        json.RawMessage `json:"data"`
-	OwnerDid    string          `json:"owner_did"`
-	Signature   ByteArray          `json:"signature"`
-	PublicKeyID string          `json:"public_key_id"`
-	Nonce       uint64          `json:"nonce"`
+	SubgroveID string `json:"subgrove_id"`
+	Key        string `json:"key"`
+	// Data is the JSON text of the stored object as UTF-8 bytes. The chain
+	// reads it as bytes, so it is sent as a JSON array of byte values, and the
+	// signed message hashes exactly these bytes.
+	Data        ByteArray `json:"data"`
+	OwnerDid    string    `json:"owner_did"`
+	Signature   ByteArray `json:"signature"`
+	PublicKeyID string    `json:"public_key_id"`
+	Nonce       uint64    `json:"nonce"`
 }
 
 // DataDeleteTx represents a data deletion transaction.

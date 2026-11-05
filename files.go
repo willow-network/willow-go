@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/willow-network/willow-go/consensus"
+	"github.com/willow-network/willow-go/internal/httpbody"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -25,10 +26,19 @@ type FileSigningOptions struct {
 	OwnerDID    string
 	PublicKeyID string
 	SignFunc    func(message []byte) (string, error) // returns hex-encoded signature
-	// Nonce is the transaction's nonce, one past the owner's account nonce.
-	// The signed message binds it. A write the chain refuses in its block
-	// after its signature and nonce verify still spends the nonce, so a retry
-	// takes the next free nonce and is signed anew.
+	// Nonce is the transaction's nonce, which the signed message binds. Take
+	// it with Client.NextNonce(ctx, OwnerDID), so that it is free in the
+	// account's window and no other write from the client takes it while this
+	// one is in flight.
+	//
+	// A write that fails to submit returns a *WriteError naming the nonce.
+	// With MayLand set, its submission may have reached the node and may
+	// still land: to send it again, sign it under the same Nonce, so that
+	// whichever attempt lands first uses the nonce and the other is refused.
+	// Signed under a fresh nonce instead, both attempts can run. Once the
+	// nonce is used (the write landed, applied or refused in its block, or
+	// its error wraps ErrNonceUsed), read what the write wrote before signing
+	// it again under a fresh nonce.
 	Nonce uint64
 }
 
@@ -59,9 +69,27 @@ type FileOperations struct {
 	client *Client
 }
 
-// Upload uploads a file to a FileStorage subgrove.
-// If signing is non-nil, the transaction will be signed with the provided credentials.
+// Upload uploads a file to a FileStorage subgrove: it sends the file's
+// manifest as a StoreFileManifest transaction signed with signing, then its
+// chunks to the storage node. signing must name the owner (OwnerDID) and
+// carry a SignFunc: without them Upload sends nothing and returns a
+// validation error, as the chain refuses a manifest with no owner or
+// signature. A manifest that fails to submit returns a *WriteError (see
+// FileSigningOptions.Nonce). Once the manifest's transaction is accepted, a
+// chunk the storage node doesn't store (an answer other than 2xx, or a failed
+// request) stops the upload with a *ChunkUploadError, which carries the
+// manifest, its transaction, and the chunk. Each request it sends times out
+// as the client's do, after 30 s if the client's HTTP client has none; see
+// UploadContext to bound the whole upload.
 func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
+	return f.UploadContext(context.Background(), subgroveID, fileKey, filename, data, storageNodeEndpoint, signing)
+}
+
+// UploadContext is Upload, stopping when ctx ends.
+func (f *FileOperations) UploadContext(ctx context.Context, subgroveID, fileKey, filename string, data []byte, storageNodeEndpoint string, signing *FileSigningOptions) (*FileManifest, error) {
+	if err := checkFileSigning("Upload", signing); err != nil {
+		return nil, err
+	}
 	chunkSize := DefaultChunkSize
 	chunks := chunkData(data, chunkSize)
 	chunkCount := len(chunks)
@@ -86,27 +114,20 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 		ChunkSize:       uint32(chunkSize),
 		ChunkMerkleRoot: merkleRoot,
 	}
-	var signatureBytes consensus.ByteArray
-	publicKeyID := ""
-
-	if signing != nil {
-		fields.OwnerDID = signing.OwnerDID
-		fields.Nonce = signing.Nonce
-		publicKeyID = signing.PublicKeyID
-
-		message, err := FormatStoreFileManifestMessage(fields)
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
-		}
-		sig, err := signing.SignFunc([]byte(message))
-		if err != nil {
-			return nil, fmt.Errorf("failed to sign store file tx: %w", err)
-		}
-		decoded, err := decodeSignatureHex(sig)
-		if err != nil {
-			return nil, err
-		}
-		signatureBytes = decoded
+	fields.OwnerDID = signing.OwnerDID
+	fields.Nonce = signing.Nonce
+	publicKeyID := signing.PublicKeyID
+	message, err := FormatStoreFileManifestMessage(fields)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign store file tx: %w", err)
+	}
+	sig, err := signing.SignFunc([]byte(message))
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign store file tx: %w", err)
+	}
+	signatureBytes, err := decodeSignatureHex(sig)
+	if err != nil {
+		return nil, err
 	}
 
 	// Submit StoreFileManifestTx to consensus, carrying exactly the signed
@@ -132,38 +153,163 @@ func (f *FileOperations) Upload(subgroveID, fileKey, filename string, data []byt
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal manifest tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	txHash, err := f.submit(ctx, fields.OwnerDID, fields.Nonce, txBody)
+	if err != nil {
 		return nil, fmt.Errorf("failed to broadcast manifest tx: %w", err)
+	}
+	manifest := &FileManifest{
+		FileKey:         fileKey,
+		Filename:        filename,
+		ContentType:     guessContentType(filename),
+		TotalSize:       uint64(len(data)),
+		ContentHash:     contentHashHex,
+		ChunkCount:      uint32(chunkCount),
+		ChunkSize:       uint32(chunkSize),
+		ChunkMerkleRoot: hex.EncodeToString(merkleRoot[:]),
+		StorageNodes:    []string{storageNodeEndpoint},
 	}
 
 	// Upload chunks to storage node
 	for i, chunk := range chunks {
 		url := fmt.Sprintf("%s/upload/%s/%s?chunk_index=%d&chunk_count=%d&content_hash=%s",
 			storageNodeEndpoint, subgroveID, fileKey, i, chunkCount, contentHashHex)
-		resp, err := http.Post(url, "application/octet-stream", bytes.NewReader(chunk))
-		if err != nil {
-			return nil, fmt.Errorf("failed to upload chunk %d: %w", i, err)
+		if err := f.uploadChunk(ctx, url, chunk); err != nil {
+			return nil, &ChunkUploadError{
+				Manifest:   manifest,
+				Submission: &WriteResult{DID: fields.OwnerDID, Nonce: fields.Nonce, TxHash: txHash},
+				Chunk:      i,
+				Err:        err,
+			}
 		}
-		resp.Body.Close()
 	}
-
-	return &FileManifest{
-		FileKey:        fileKey,
-		Filename:       filename,
-		ContentType:    guessContentType(filename),
-		TotalSize:      uint64(len(data)),
-		ContentHash:    contentHashHex,
-		ChunkCount:     uint32(chunkCount),
-		ChunkSize:      uint32(chunkSize),
-		ChunkMerkleRoot: hex.EncodeToString(merkleRoot[:]),
-		StorageNodes:   []string{storageNodeEndpoint},
-	}, nil
+	return manifest, nil
 }
 
-// Download downloads a file from a FileStorage subgrove.
-func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
-	manifest, err := f.Metadata(subgroveID, fileKey)
+// uploadChunk sends one chunk to the storage node's upload route, returning
+// an *HTTPError for an answer other than 2xx.
+func (f *FileOperations) uploadChunk(ctx context.Context, url string, chunk []byte) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(chunk))
 	if err != nil {
+		return NewNetworkError("failed to create the chunk upload request", err)
+	}
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := f.storageClient().Do(req)
+	if err != nil {
+		return NewNetworkError("the chunk upload failed", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return NewHTTPError(resp.StatusCode, "the storage node refused the chunk: "+strings.TrimSpace(string(message)))
+	}
+	return nil
+}
+
+// ChunkUploadError is an Upload whose manifest transaction CheckTx accepted
+// but whose chunk Chunk the storage node didn't store. The manifest is on
+// chain once its transaction lands, which uses its nonce, but the storage
+// node doesn't hold the file whole: chunk Chunk failed, and the chunks after
+// it weren't sent.
+type ChunkUploadError struct {
+	// Manifest is the manifest Upload sent, as it returns it on success.
+	Manifest *FileManifest
+	// Submission is the manifest's transaction: its signer, nonce, and hash.
+	Submission *WriteResult
+	// Chunk is the index of the chunk the storage node didn't store.
+	Chunk int
+	// Err is why: the request's error, or an *HTTPError carrying the
+	// storage node's status and message.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *ChunkUploadError) Error() string {
+	return fmt.Sprintf("the manifest of file %s was accepted (transaction %s, nonce %d of %s), but chunk %d of %d wasn't stored: %v",
+		e.Manifest.FileKey, e.Submission.TxHash, e.Submission.Nonce, e.Submission.DID, e.Chunk, e.Manifest.ChunkCount, e.Err)
+}
+
+// Unwrap returns Err.
+func (e *ChunkUploadError) Unwrap() error {
+	return e.Err
+}
+
+// fileRequestTimeout bounds each request a file operation sends when the
+// client's HTTP client has no timeout (WithHTTPClient with a zero Timeout).
+var fileRequestTimeout = defaultTimeout
+
+// storageClient is the HTTP client Upload and Download talk to a storage node
+// with: it has the client's timeout (WithTimeout), or fileRequestTimeout when
+// that is none, but not the client's transport, which with WithAPIKey sends
+// the API key, meant for the API alone.
+func (f *FileOperations) storageClient() *http.Client {
+	timeout := f.client.httpClient.Timeout
+	if timeout <= 0 {
+		timeout = fileRequestTimeout
+	}
+	return &http.Client{Timeout: timeout}
+}
+
+// requestContext bounds one request a file operation sends to the API: by
+// ctx, and by fileRequestTimeout when the client's HTTP client has no
+// timeout.
+func (f *FileOperations) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if f.client.httpClient.Timeout > 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, fileRequestTimeout)
+}
+
+// submit submits a file write's transaction (see submitSigned) as one request
+// bounded by requestContext.
+func (f *FileOperations) submit(ctx context.Context, did string, nonce uint64, body []byte) (string, error) {
+	ctx, cancel := f.requestContext(ctx)
+	defer cancel()
+	return f.client.submitSigned(ctx, did, nonce, body)
+}
+
+// The chain refuses a file manifest of more than maxFileSize bytes or
+// maxChunkCount chunks.
+const (
+	maxFileSize   = 1 << 30
+	maxChunkCount = maxFileSize / 4096
+)
+
+// checkFileShape refuses a manifest the chain would refuse for its sizes: no
+// data, more than maxFileSize bytes or maxChunkCount chunks, or a ChunkCount
+// that chunks of ChunkSize bytes, the last one partial, don't make TotalSize
+// with.
+func checkFileShape(m *FileManifest) error {
+	count, size := uint64(m.ChunkCount), uint64(m.ChunkSize)
+	switch {
+	case m.TotalSize == 0 || m.TotalSize > maxFileSize:
+		return fmt.Errorf("the manifest's file is %d bytes, not 1 to %d", m.TotalSize, maxFileSize)
+	case count == 0 || count > maxChunkCount:
+		return fmt.Errorf("the manifest's file is %d chunks, not 1 to %d", count, maxChunkCount)
+	case m.TotalSize > count*size || m.TotalSize <= (count-1)*size:
+		return fmt.Errorf("%d chunks of %d bytes don't make the manifest's %d-byte file", count, size, m.TotalSize)
+	}
+	return nil
+}
+
+// Download downloads a file from a FileStorage subgrove: the chunks its
+// manifest (see Metadata) names, each the length the manifest makes it, which
+// must hash to the manifest's chunk Merkle root and content hash. It refuses a
+// manifest the chain would refuse for its sizes (no data, more than 1 GiB or
+// 262,144 chunks, or a chunk count its total and chunk sizes don't make) before
+// it asks for any chunk, and a chunk longer than 2 MiB, the most the storage
+// node's upload route takes, as it reads it. Each request it sends times out
+// as Upload's do; see DownloadContext to bound the whole download.
+func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
+	return f.DownloadContext(context.Background(), subgroveID, fileKey, storageNodeEndpoint)
+}
+
+// DownloadContext is Download, stopping when ctx ends.
+func (f *FileOperations) DownloadContext(ctx context.Context, subgroveID, fileKey, storageNodeEndpoint string) ([]byte, error) {
+	manifest, err := f.MetadataContext(ctx, subgroveID, fileKey)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkFileShape(manifest); err != nil {
 		return nil, err
 	}
 
@@ -172,14 +318,25 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 	for i := uint32(0); i < manifest.ChunkCount; i++ {
 		url := fmt.Sprintf("%s/chunk/%s/%s/%d?content_hash=%s",
 			storageNodeEndpoint, subgroveID, fileKey, i, manifest.ContentHash)
-		resp, err := http.Get(url)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return nil, fmt.Errorf("failed to download chunk %d: %w", i, err)
 		}
-		chunk, err := io.ReadAll(resp.Body)
+		resp, err := f.storageClient().Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to download chunk %d: %w", i, err)
+		}
+		want := uint64(manifest.ChunkSize)
+		if i == manifest.ChunkCount-1 {
+			want = manifest.TotalSize - uint64(i)*want
+		}
+		chunk, err := httpbody.ReadAll(io.LimitReader(resp.Body, int64(want)+1), httpbody.Chunk)
 		resp.Body.Close()
 		if err != nil {
 			return nil, fmt.Errorf("failed to read chunk %d: %w", i, err)
+		}
+		if uint64(len(chunk)) > want {
+			return nil, fmt.Errorf("chunk %d is longer than the %d bytes the manifest makes it", i, want)
 		}
 		chunkHashes = append(chunkHashes, sha256.Sum256(chunk))
 		fileData = append(fileData, chunk...)
@@ -200,9 +357,18 @@ func (f *FileOperations) Download(subgroveID, fileKey, storageNodeEndpoint strin
 	return fileData, nil
 }
 
-// Metadata gets file manifest metadata from the validator API.
+// Metadata gets file manifest metadata from the validator API, which answers
+// with the manifest itself, not the success/data envelope. Its request times
+// out as Upload's do.
 func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, error) {
-	req, err := f.client.newAPIRequest(context.Background(), http.MethodGet, fmt.Sprintf("/files/%s/%s", subgroveID, fileKey), nil)
+	return f.MetadataContext(context.Background(), subgroveID, fileKey)
+}
+
+// MetadataContext is Metadata, stopping when ctx ends.
+func (f *FileOperations) MetadataContext(ctx context.Context, subgroveID, fileKey string) (*FileManifest, error) {
+	ctx, cancel := f.requestContext(ctx)
+	defer cancel()
+	req, err := f.client.newAPIRequest(ctx, http.MethodGet, fmt.Sprintf("/files/%s/%s", subgroveID, fileKey), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -217,15 +383,24 @@ func (f *FileOperations) Metadata(subgroveID, fileKey string) (*FileManifest, er
 	}
 
 	var manifest FileManifest
-	if err := json.NewDecoder(resp.Body).Decode(&manifest); err != nil {
+	if err := httpbody.Decode(resp.Body, httpbody.Small, &manifest); err != nil {
 		return nil, err
 	}
 	return &manifest, nil
 }
 
-// List lists all files in a subgrove.
+// List returns the first page of a subgrove's files as the API answers it:
+// at most 50, by default. It doesn't read the pages after it. Its request
+// times out as Upload's do.
 func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
-	req, err := f.client.newAPIRequest(context.Background(), http.MethodGet, fmt.Sprintf("/files/%s", subgroveID), nil)
+	return f.ListContext(context.Background(), subgroveID)
+}
+
+// ListContext is List, stopping when ctx ends.
+func (f *FileOperations) ListContext(ctx context.Context, subgroveID string) ([]FileManifest, error) {
+	ctx, cancel := f.requestContext(ctx)
+	defer cancel()
+	req, err := f.client.newAPIRequest(ctx, http.MethodGet, fmt.Sprintf("/files/%s", subgroveID), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -235,39 +410,48 @@ func (f *FileOperations) List(subgroveID string) ([]FileManifest, error) {
 	}
 	defer resp.Body.Close()
 
+	// The API answers {files, limit, start_after, has_more}, or {error} with
+	// a failure status, without the success/data envelope.
+	body, err := httpbody.ReadAll(resp.Body, httpbody.Small)
+	if err != nil {
+		return nil, NewNetworkError("failed to read /files response", err)
+	}
+	if resp.StatusCode >= 400 {
+		return nil, f.client.handleErrorResponse(resp.StatusCode, body)
+	}
 	var result FileListResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := httpbody.Unmarshal(body, &result); err != nil {
 		return nil, err
 	}
 	return result.Files, nil
 }
 
-// Delete deletes a file (submits DeleteFileManifestTx to consensus).
-// If signing is non-nil, the transaction will be signed with the provided credentials.
+// Delete deletes a file: it sends a DeleteFileManifest transaction signed
+// with signing, which must name the owner (OwnerDID) and carry a SignFunc;
+// without them Delete sends nothing and returns a validation error. A
+// transaction that fails to submit returns a *WriteError (see
+// FileSigningOptions.Nonce). Its request times out as Upload's do.
 func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigningOptions) error {
-	ownerDID := ""
-	var signatureBytes consensus.ByteArray
-	publicKeyID := ""
-	var nonce uint64
+	return f.DeleteContext(context.Background(), subgroveID, fileKey, signing)
+}
 
-	if signing != nil {
-		ownerDID = signing.OwnerDID
-		publicKeyID = signing.PublicKeyID
-		nonce = signing.Nonce
-
-		message, err := FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID, nonce)
-		if err != nil {
-			return fmt.Errorf("failed to sign delete file tx: %w", err)
-		}
-		sig, err := signing.SignFunc([]byte(message))
-		if err != nil {
-			return fmt.Errorf("failed to sign delete file tx: %w", err)
-		}
-		decoded, err := decodeSignatureHex(sig)
-		if err != nil {
-			return err
-		}
-		signatureBytes = decoded
+// DeleteContext is Delete, stopping when ctx ends.
+func (f *FileOperations) DeleteContext(ctx context.Context, subgroveID, fileKey string, signing *FileSigningOptions) error {
+	if err := checkFileSigning("Delete", signing); err != nil {
+		return err
+	}
+	ownerDID, publicKeyID, nonce := signing.OwnerDID, signing.PublicKeyID, signing.Nonce
+	message, err := FormatDeleteFileManifestMessage(subgroveID, fileKey, ownerDID, nonce)
+	if err != nil {
+		return fmt.Errorf("failed to sign delete file tx: %w", err)
+	}
+	sig, err := signing.SignFunc([]byte(message))
+	if err != nil {
+		return fmt.Errorf("failed to sign delete file tx: %w", err)
+	}
+	signatureBytes, err := decodeSignatureHex(sig)
+	if err != nil {
+		return err
 	}
 
 	deleteTx := map[string]interface{}{
@@ -284,20 +468,35 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 	if err != nil {
 		return fmt.Errorf("failed to marshal delete tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	if _, err := f.submit(ctx, ownerDID, nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast delete tx: %w", err)
 	}
 	return nil
 }
 
 // UnregisterStorageNode submits an UnregisterStorageNode transaction to consensus.
-// The signing options are required for this transaction.
+// The signing options are required for this transaction: SignFunc signs as
+// the node's DID, and Nonce is the transaction's nonce (take it with
+// Client.NextNonce(ctx, nodeDID)). It is signed over
+// FormatUnregisterStorageNodeMessage, which binds the node and the nonce.
+// Without a node DID or a SignFunc it sends nothing and returns a validation
+// error. A transaction that fails to submit returns a *WriteError (see
+// FileSigningOptions.Nonce). Its request times out as Upload's do.
 func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSigningOptions) error {
-	if signing == nil {
-		return fmt.Errorf("signing options are required to unregister a storage node")
+	return f.UnregisterStorageNodeContext(context.Background(), nodeDID, signing)
+}
+
+// UnregisterStorageNodeContext is UnregisterStorageNode, stopping when ctx
+// ends.
+func (f *FileOperations) UnregisterStorageNodeContext(ctx context.Context, nodeDID string, signing *FileSigningOptions) error {
+	if nodeDID == "" || signing == nil || signing.SignFunc == nil {
+		return NewValidationError("UnregisterStorageNode: a node DID and signing options with a SignFunc are required")
 	}
 
-	message := fmt.Sprintf("unregister_storage_node:%s", nodeDID)
+	message, err := FormatUnregisterStorageNodeMessage(nodeDID, signing.Nonce)
+	if err != nil {
+		return fmt.Errorf("failed to sign unregister storage node tx: %w", err)
+	}
 	sig, err := signing.SignFunc([]byte(message))
 	if err != nil {
 		return fmt.Errorf("failed to sign unregister storage node tx: %w", err)
@@ -320,8 +519,18 @@ func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSign
 	if err != nil {
 		return fmt.Errorf("failed to marshal unregister storage node tx: %w", err)
 	}
-	if err := f.client.submitTxBytes(context.Background(), txBody); err != nil {
+	if _, err := f.submit(ctx, nodeDID, signing.Nonce, txBody); err != nil {
 		return fmt.Errorf("failed to broadcast unregister storage node tx: %w", err)
+	}
+	return nil
+}
+
+// checkFileSigning refuses signing options a file write can't sign with: none,
+// or ones without an owner DID or a SignFunc.
+func checkFileSigning(op string, signing *FileSigningOptions) error {
+	if signing == nil || signing.OwnerDID == "" || signing.SignFunc == nil {
+		return NewValidationError(op + ": signing options with an OwnerDID and a SignFunc are required; " +
+			"the chain refuses a file manifest transaction with no owner or signature")
 	}
 	return nil
 }

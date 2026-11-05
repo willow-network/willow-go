@@ -1,6 +1,7 @@
 package lightclient
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -308,5 +309,34 @@ func TestProofVerificationResult(t *testing.T) {
 	}
 	if mismatchResult.Error != "hash mismatch" {
 		t.Error("Error message mismatch")
+	}
+}
+
+// A header anyone can build, its block carrying its own one-validator set
+// listed as signing and no signature, passes VerifyHeader's checks:
+// ChecksPassed (and the deprecated Verified, which matches it) says those
+// checks passed, not that the validators signed the header. A header of
+// another chain doesn't pass.
+func TestChecksPassedIsNotASignatureCheck(t *testing.T) {
+	lc, err := NewLightClient(Config{ChainID: "willow", ValidatorEndpoints: []string{"http://unused"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.InitializeWithTrustedHeader(LightBlock{Header: Header{ChainID: "willow", Height: 1, Time: time.Now().Add(-time.Minute)}}); err != nil {
+		t.Fatal(err)
+	}
+	forged := LightBlock{
+		Header:       Header{ChainID: "willow", Height: 5, Time: time.Now(), AppHash: "FORGED"},
+		ValidatorSet: ValidatorSet{Validators: []Validator{{Address: "AA", VotingPower: 1}}},
+		Commit:       Commit{Height: 5, Signatures: []CommitSig{{BlockIDFlag: 2, ValidatorAddress: "AA"}}},
+	}
+	result, err := lc.VerifyHeader(context.Background(), forged)
+	if err != nil || !result.ChecksPassed || !result.Verified || result.AppHash != "FORGED" {
+		t.Fatalf("a header anyone can build: %+v, %v; want its checks passed", result, err)
+	}
+	forged.Header.ChainID = "other"
+	result, err = lc.VerifyHeader(context.Background(), forged)
+	if err != nil || result.ChecksPassed || result.Verified {
+		t.Fatalf("a header of another chain: %+v, %v; want its checks failed", result, err)
 	}
 }

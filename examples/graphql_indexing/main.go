@@ -2,7 +2,7 @@
 //
 // This example demonstrates:
 // - Listing available subgroves
-// - Querying indexed blockchain data with GraphQL
+// - Querying indexed blockchain data with GraphQL (answers are unverified)
 // - Checking subgrove indexing status
 // - Listing indexers
 //
@@ -41,14 +41,15 @@ func main() {
 	} else {
 		fmt.Printf("   Found %d subgroves:\n", len(subgroves))
 		for _, sg := range subgroves {
-			fmt.Printf("   - %s (%s)\n", sg.Name, sg.ID)
-			fmt.Printf("     Status: %s\n", sg.Status)
-			fmt.Printf("     Current block: %d\n", sg.CurrentBlock)
+			fmt.Printf("   - %s (%s)\n", sg.Name, sg.SubgroveID)
+			fmt.Printf("     Mode: %s\n", sg.Mode)
+			fmt.Printf("     Indexers: %d\n", sg.IndexerCount)
 		}
 		fmt.Println()
 	}
 
-	// 2. Query a subgrove (example: Uniswap V3)
+	// 2. Query a subgrove (example: Uniswap V3). Execute sends the query
+	// unverified: the SDK can't verify a GraphQL answer against the chain.
 	fmt.Println("2. Querying subgrove (example: uniswap-v3)...")
 	query := `
 		query {
@@ -73,15 +74,12 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v (subgrove may not exist)\n\n", err)
 	} else {
-		fmt.Println("   Query result:")
+		fmt.Println("   Query result (unverified):")
 		if response.Data != nil {
 			var prettyJSON map[string]interface{}
 			json.Unmarshal(response.Data, &prettyJSON)
 			formatted, _ := json.MarshalIndent(prettyJSON, "   ", "  ")
 			fmt.Printf("   %s\n", formatted)
-		}
-		if len(response.Proof) > 0 {
-			fmt.Println("   Proof included in response")
 		}
 		for _, err := range response.Errors {
 			fmt.Printf("   Error: %s\n", err.Message)
@@ -116,7 +114,7 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Println("   Query result:")
+		fmt.Println("   Query result (unverified):")
 		if response.Data != nil {
 			var prettyJSON map[string]interface{}
 			json.Unmarshal(response.Data, &prettyJSON)
@@ -125,7 +123,9 @@ func main() {
 		}
 	}
 
-	// 4. Using the GraphQL query builder
+	// 4. Using the GraphQL query builder. Indexing.Query would verify the
+	// answer, which this SDK can't do, so it returns an unsupported error and
+	// sends nothing; QueryUnverified sends the query.
 	fmt.Println("\n4. Using GraphQL query builder...")
 	req := willow.NewGraphQLQuery(`
 		query GetRecentSwaps($first: Int!) {
@@ -137,17 +137,15 @@ func main() {
 	`).
 		Variable("first", 10).
 		OperationName("GetRecentSwaps").
-		IncludeProof().
 		Build()
 
-	response, err = client.Indexing.Query(ctx, "uniswap-v3", req)
-	if err != nil {
+	if _, err := client.Indexing.Query(ctx, "uniswap-v3", req); willow.IsUnsupported(err) {
+		fmt.Printf("   Note: %v\n", err)
+	}
+	if _, err := client.Indexing.QueryUnverified(ctx, "uniswap-v3", req); err != nil {
 		fmt.Printf("   Note: %v\n", err)
 	} else {
-		fmt.Println("   Query executed with builder")
-		if len(response.Proof) > 0 {
-			fmt.Println("   Proof included: yes")
-		}
+		fmt.Println("   Query executed with builder (unverified)")
 	}
 
 	// 5. Get subgrove status
@@ -156,10 +154,9 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v\n\n", err)
 	} else {
-		fmt.Printf("   Subgrove: %s\n", subgrove.ID)
-		fmt.Printf("   Network: %s\n", subgrove.Network)
-		fmt.Printf("   Start block: %d\n", subgrove.StartBlock)
-		fmt.Printf("   Current block: %d\n", subgrove.CurrentBlock)
+		fmt.Printf("   Subgrove: %s\n", subgrove.SubgroveID)
+		fmt.Printf("   Chain: %s\n", subgrove.Chain)
+		fmt.Printf("   Latest indexed block: %d\n", subgrove.LatestBlock)
 		fmt.Printf("   Status: %s\n", subgrove.Status)
 	}
 
@@ -176,14 +173,14 @@ func main() {
 			fmt.Printf("   - %s\n", indexer.IndexerDID)
 			fmt.Printf("     Endpoint: %s\n", indexer.Endpoint)
 			fmt.Printf("     Query endpoint: %s\n", indexer.EffectiveQueryEndpoint())
-			fmt.Printf("     Stake: %d WILL\n", indexer.StakeAmount)
+			fmt.Printf("     Stake: %s (smallest unit)\n", indexer.StakeAmount)
 			fmt.Printf("     Status: %s\n", indexer.Status)
 			fmt.Printf("     Performance: %.1f\n", indexer.PerformanceScore)
 			fmt.Printf("     Subgroves: %v\n", indexer.Subgroves)
 		}
 	}
 
-	// 7. Execute query and unmarshal result
+	// 7. Execute query and unmarshal result (unverified)
 	fmt.Println("\n7. Execute and unmarshal result...")
 	type SwapResult struct {
 		Swaps []struct {
@@ -207,14 +204,11 @@ func main() {
 		}
 	}
 
-	// 8. Comparison with The Graph
-	fmt.Println("\n8. Willow vs The Graph...")
-	fmt.Println("   Willow advantages:")
-	fmt.Println("   + Cryptographic proofs for every query")
-	fmt.Println("   + Trustless verification of indexed data")
-	fmt.Println("   + No fisherman disputes needed")
-	fmt.Println("   + Instant finality on results")
-	fmt.Println("   + Native proof verification in SDK")
+	// 8. What the SDK verifies
+	fmt.Println("\n8. What the SDK verifies...")
+	fmt.Println("   GraphQL and SQL answers are returned as the API or indexer")
+	fmt.Println("   sends them: the SDK verifies no CometBFT header, and no proof")
+	fmt.Println("   it can check binds an answer's data to the chain's state.")
 
 	fmt.Println("\nGraphQL indexing example complete!")
 }

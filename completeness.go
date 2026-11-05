@@ -2,10 +2,12 @@
 //
 // Mirrors Willow's on-chain completeness anchor so a client can verify that an
 // indexer's served event set for a (subgrove, block) is the complete,
-// untampered filter-matched set the chain attests to — without trusting the
+// untampered filter-matched set the anchor binds — without trusting the
 // indexer. The on-chain events_commitment (a 32-byte keccak hash) is the
-// trusted anchor; the indexer serves the matched-log preimage; the client
-// re-hashes it via CanonicalEventSetHash and compares.
+// anchor; the indexer serves the matched-log preimage; the client re-hashes it
+// via CanonicalEventSetHash and compares. VerifyServedEvents trusts the
+// commitment it is given; VerifyBlockCompleteness reads it from an RPC node,
+// which it trusts for it.
 //
 // Canonical Rust source: willow-network consensus
 // indexed_data_handler::full_block_auth::canonical_event_set_hash.

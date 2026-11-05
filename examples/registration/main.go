@@ -2,12 +2,12 @@
 //
 // This example demonstrates:
 // - Generating DIDs with different signature algorithms
-// - Registering a DID
-// - Querying apps and subgroves
+// - Listing subgroves and reading one
+// - Registering a subgrove: a signed RegisterSubgrove transaction
 //
-// Note: Creating apps and subgroves requires submitting transactions
-// through the consensus layer. This example shows the read operations
-// available through the SDK.
+// It doesn't register a DID: a DID is registered on chain by a RegisterDid
+// transaction, which this SDK doesn't build, so register and fund the
+// owner's DID before it signs the subgrove's registration.
 //
 // Run with: go run ./examples/registration
 
@@ -33,7 +33,7 @@ func main() {
 	}
 	defer client.Close()
 
-	// 1. Generate and register Ed25519 DID (recommended)
+	// 1. Generate an Ed25519 DID (recommended)
 	fmt.Println("1. Generating Ed25519 DID (recommended)...")
 	ed25519Identity, err := willow.NewIdentity(willow.Ed25519)
 	if err != nil {
@@ -46,17 +46,10 @@ func main() {
 	// Willow DIDs are self-certifying: the id is derived from the public key,
 	// not chosen. The chain accepts a registration only for the exact derived
 	// id, and the fee is paid from that id's own balance, so a new DID must be
-	// FUNDED before it can be registered:
-	//   1. generate locally (done above),
-	//   2. have a funded account transfer >= the registration fee to the DID,
-	//   3. then RegisterDID (below). Expect an "insufficient balance" style
-	//      error here until step 2 has been done for this fresh DID.
-	_, err = client.RegisterDID(ctx, ed25519Identity.DidDocument)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Println("   Registered successfully")
-	}
+	// FUNDED before it can be registered. A DID is registered by a RegisterDid
+	// transaction, which this SDK does not build.
+	fmt.Println("   Register and fund it with a RegisterDid transaction (not built by this SDK)")
+	fmt.Println()
 
 	// 2. Generate Secp256k1 DID (Ethereum-compatible)
 	fmt.Println("2. Generating Secp256k1 DID (Ethereum-compatible)...")
@@ -68,12 +61,7 @@ func main() {
 	fmt.Println("   Algorithm: Secp256k1")
 	fmt.Printf("   Public Key ID: %s\n", secp256k1Identity.PublicKeyID())
 
-	_, err = client.RegisterDID(ctx, secp256k1Identity.DidDocument)
-	if err != nil {
-		fmt.Printf("   Note: %v\n\n", err)
-	} else {
-		fmt.Println("   Registered successfully")
-	}
+	fmt.Println()
 
 	// 3. Set identity for per-request signing
 	fmt.Println("3. Setting identity...")
@@ -107,22 +95,23 @@ func main() {
 	if err != nil {
 		fmt.Printf("   Note: %v (subgrove may not exist)\n", err)
 	} else {
+		// /subgroves/{id} answers with the id, name, and owner;
+		// ListSubgroves carries the schema, writers, and free readers.
 		fmt.Printf("   Subgrove ID: %s\n", sg.SubgroveID)
 		fmt.Printf("   Name: %s\n", sg.Name)
-		fmt.Printf("   Schema: %s\n", sg.Schema.Name)
-		fmt.Printf("   Fields: %d\n", len(sg.Schema.Fields))
+		fmt.Printf("   Owner: %s\n", sg.OwnerDid)
 	}
 
 	// 6. Build a subgrove registration request using the SDK builders
 	fmt.Println("\n6. Building a registration request...")
 
-	// Schema builder
+	// Schema builder. The chain doesn't support schema indexes, so a schema
+	// with one is refused before signing.
 	schema := willow.NewSchemaBuilder("User").
 		Description("User profile schema").
 		StringField("name", true).
 		StringField("email", true).
 		IntField("age", false).
-		HashIndex("email_idx", []string{"email"}).
 		Build()
 	fmt.Printf("   Schema built: %s with %d fields\n", schema.Name, len(schema.Fields))
 
@@ -131,23 +120,25 @@ func main() {
 		Description("User profiles").
 		Schema(*schema).
 		Owner(ed25519Identity.DID()).
-		RewardRate(1000).
+		AddWriter(ed25519Identity.DID()).
 		Build()
 	fmt.Printf("   Subgrove request built: %s\n", subgroveReq.SubgroveID)
 
-	// 7. Submit the registration. May fail without funding; the SDK
-	// surface for the write is client.Registration.RegisterSubgrove.
+	// 7. Submit the registration: a RegisterSubgrove transaction signed by the
+	// owner. It needs a registered, funded owner DID.
 	fmt.Println("\n7. Submitting registration...")
-	if _, err := client.Registration.RegisterSubgrove(ctx, subgroveReq); err != nil {
+	if write, err := client.Registration.RegisterSubgrove(ctx, subgroveReq); err != nil {
 		fmt.Printf("   Note: %v (likely needs WILL tokens to fund the subgrove)\n", err)
 	} else {
-		fmt.Printf("   Registered: %s\n", subgroveReq.SubgroveID)
+		// Submitted: CheckTx accepted it. The subgrove exists once it lands
+		// (client.WaitUntilLanded) and its block applies it.
+		fmt.Printf("   Submitted %s (nonce %d, tx %s)\n", subgroveReq.SubgroveID, write.Nonce, write.TxHash)
 	}
 
 	// 8. Summary
 	fmt.Println("\n8. Registration summary...")
 	fmt.Println("   DID generation:      willow.NewIdentity(algorithm)")
-	fmt.Println("   DID registration:    client.RegisterDID(ctx, didDocument)")
+	fmt.Println("   DID registration:    a RegisterDid transaction (not built by this SDK)")
 	fmt.Println("   Subgrove register:   client.Registration.RegisterSubgrove(ctx, req)")
 	fmt.Println("   Subgrove list/get:   client.Registration.ListSubgroves / GetSubgrove")
 

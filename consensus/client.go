@@ -3,12 +3,16 @@ package consensus
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/willow-network/willow-go/internal/httpbody"
 )
 
 // Client provides methods for interacting with the CometBFT consensus layer.
@@ -26,7 +30,8 @@ type ClientConfig struct {
 	// APIURL is the Willow REST API endpoint. Transaction submission
 	// goes through its /tx/submit endpoint because the validator's
 	// on-the-wire format is bincode.
-	APIURL  string
+	APIURL string
+	// Timeout is the HTTP client's timeout; 0 is DefaultClientConfig's.
 	Timeout time.Duration
 }
 
@@ -41,6 +46,9 @@ func DefaultClientConfig() ClientConfig {
 
 // NewClient creates a new consensus client.
 func NewClient(config ClientConfig) *Client {
+	if config.Timeout == 0 {
+		config.Timeout = DefaultClientConfig().Timeout
+	}
 	return &Client{
 		httpClient: &http.Client{
 			Timeout: config.Timeout,
@@ -78,7 +86,7 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 	}
 	defer httpResp.Body.Close()
 
-	respBody, err := io.ReadAll(httpResp.Body)
+	respBody, err := httpbody.ReadAll(httpResp.Body, httpbody.Small)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -92,7 +100,7 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 		} `json:"data"`
 		Error *string `json:"error"`
 	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
+	if err := httpbody.Unmarshal(respBody, &envelope); err != nil {
 		return nil, fmt.Errorf("failed to parse /tx/submit response: %w", err)
 	}
 
@@ -126,41 +134,56 @@ func (c *Client) BroadcastTxSync(ctx context.Context, tx interface{}) (*Broadcas
 // BroadcastTxSync + GetTx polling, not speak JSON-RPC directly to
 // CometBFT (the validator no longer accepts JSON on the wire).
 
-// GetTx retrieves a transaction by hash.
+// GetTx looks a transaction up by its hash: the hex TxHash /tx/submit returns
+// (either case, with or without a 0x prefix). CometBFT's JSON-RPC reads the
+// tx method's hash as base64 of its 32 bytes, so GetTx sends it that way. A
+// transaction the node hasn't indexed (not in a block yet, or never) is a
+// TxResult with Status TransactionStatusNotFound; one in a block has its
+// Height and its block result's Code and Log (Code 0 is applied; a refusal's
+// Log ends "(nonce N spent)" when the refusal used its nonce). An answer whose
+// hash isn't the one asked for is an error. The result is the RPC node's
+// word: nothing in its answer is verified against the chain.
 func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
+	raw, err := txHashBytes(hash)
+	if err != nil {
+		return nil, err
+	}
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
 		"method":  "tx",
 		"params": map[string]interface{}{
-			"hash": hash,
+			"hash":  base64.StdEncoding.EncodeToString(raw),
+			"prove": false,
 		},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Tx)
 	if err != nil {
 		return nil, err
 	}
 
 	if resp.Error != nil {
-		if resp.Error.Code == -32603 { // Transaction not found
+		// CometBFT answers an unknown hash with an internal error whose data
+		// says "tx (<HASH>) not found" or "tx not found: <HASH>".
+		if resp.Error.Code == -32603 && strings.Contains(resp.Error.Data, "not found") {
 			return &TxResult{
 				Hash:   hash,
 				Status: TransactionStatusNotFound,
 			}, nil
 		}
-		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
+		return nil, fmt.Errorf("RPC error: %s %s", resp.Error.Message, resp.Error.Data)
 	}
 
 	var txResp struct {
-		Hash     string `json:"hash"`
-		Height   string `json:"height"`
-		Index    uint32 `json:"index"`
+		Hash     string    `json:"hash"`
+		Height   jsonInt64 `json:"height"`
+		Index    uint32    `json:"index"`
 		TxResult struct {
 			Code    uint32          `json:"code"`
 			Log     string          `json:"log"`
-			GasUsed string          `json:"gas_used"`
-			GasWant string          `json:"gas_wanted"`
+			GasUsed jsonInt64       `json:"gas_used"`
+			GasWant jsonInt64       `json:"gas_wanted"`
 			Data    json.RawMessage `json:"data"`
 		} `json:"tx_result"`
 	}
@@ -168,13 +191,19 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	if err := json.Unmarshal(resp.Result, &txResp); err != nil {
 		return nil, fmt.Errorf("failed to parse transaction: %w", err)
 	}
+	if answered, err := txHashBytes(txResp.Hash); err != nil || !bytes.Equal(answered, raw) {
+		return nil, fmt.Errorf("the RPC answered for transaction %.80q, not %s", txResp.Hash, hash)
+	}
 
 	result := &TxResult{
-		Hash:  txResp.Hash,
-		Index: txResp.Index,
-		Code:  txResp.TxResult.Code,
-		Log:   txResp.TxResult.Log,
-		Data:  txResp.TxResult.Data,
+		Hash:    txResp.Hash,
+		Height:  int64(txResp.Height),
+		Index:   txResp.Index,
+		Code:    txResp.TxResult.Code,
+		Log:     txResp.TxResult.Log,
+		GasUsed: int64(txResp.TxResult.GasUsed),
+		GasWant: int64(txResp.TxResult.GasWant),
+		Data:    txResp.TxResult.Data,
 	}
 
 	if txResp.TxResult.Code == 0 {
@@ -186,6 +215,40 @@ func (c *Client) GetTx(ctx context.Context, hash string) (*TxResult, error) {
 	return result, nil
 }
 
+// txHashBytes reads a transaction hash given as hex (either case, with or
+// without a 0x prefix): CometBFT's, a SHA-256 of 32 bytes.
+func txHashBytes(hash string) ([]byte, error) {
+	bare := strings.TrimPrefix(strings.TrimPrefix(hash, "0x"), "0X")
+	raw, err := hex.DecodeString(bare)
+	if err != nil {
+		return nil, fmt.Errorf("transaction hash %q is not hex: %w", hash, err)
+	}
+	if len(raw) != 32 {
+		return nil, fmt.Errorf("transaction hash %q is %d bytes, not 32", hash, len(raw))
+	}
+	return raw, nil
+}
+
+// jsonInt64 reads an int64 CometBFT writes as a decimal string (or a number).
+type jsonInt64 int64
+
+// UnmarshalJSON implements json.Unmarshaler.
+func (n *jsonInt64) UnmarshalJSON(data []byte) error {
+	text := string(data)
+	if text == "null" {
+		return nil
+	}
+	if unquoted, err := strconv.Unquote(text); err == nil {
+		text = unquoted
+	}
+	v, err := strconv.ParseInt(text, 10, 64)
+	if err != nil {
+		return fmt.Errorf("not an integer: %s", data)
+	}
+	*n = jsonInt64(v)
+	return nil
+}
+
 // GetStatus retrieves the node status.
 func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) {
 	rpcReq := map[string]interface{}{
@@ -195,7 +258,7 @@ func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) 
 		"params":  map[string]interface{}{},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -212,8 +275,9 @@ func (c *Client) GetStatus(ctx context.Context) (map[string]interface{}, error) 
 	return status, nil
 }
 
-// GetLatestBlock retrieves the latest block.
-func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, error) {
+// GetLatestBlock retrieves the latest block, as the RPC node reports it:
+// nothing in it is verified.
+func (c *Client) GetLatestBlock(ctx context.Context) (*BlockResult, error) {
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -221,7 +285,7 @@ func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, er
 		"params":  map[string]interface{}{},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Block)
 	if err != nil {
 		return nil, err
 	}
@@ -230,16 +294,17 @@ func (c *Client) GetLatestBlock(ctx context.Context) (map[string]interface{}, er
 		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
 	}
 
-	var block map[string]interface{}
+	var block BlockResult
 	if err := json.Unmarshal(resp.Result, &block); err != nil {
 		return nil, fmt.Errorf("failed to parse block: %w", err)
 	}
 
-	return block, nil
+	return &block, nil
 }
 
-// GetBlock retrieves a block by height.
-func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interface{}, error) {
+// GetBlock retrieves the block at height, as the RPC node reports it:
+// nothing in it is verified.
+func (c *Client) GetBlock(ctx context.Context, height int64) (*BlockResult, error) {
 	rpcReq := map[string]interface{}{
 		"jsonrpc": "2.0",
 		"id":      1,
@@ -249,7 +314,7 @@ func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interfa
 		},
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Block)
 	if err != nil {
 		return nil, err
 	}
@@ -258,12 +323,12 @@ func (c *Client) GetBlock(ctx context.Context, height int64) (map[string]interfa
 		return nil, fmt.Errorf("RPC error: %s", resp.Error.Message)
 	}
 
-	var block map[string]interface{}
+	var block BlockResult
 	if err := json.Unmarshal(resp.Result, &block); err != nil {
 		return nil, fmt.Errorf("failed to parse block: %w", err)
 	}
 
-	return block, nil
+	return &block, nil
 }
 
 // GetValidators retrieves the validators at a given height.
@@ -280,7 +345,7 @@ func (c *Client) GetValidators(ctx context.Context, height int64) (map[string]in
 		"params":  params,
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -311,7 +376,7 @@ func (c *Client) GetCommit(ctx context.Context, height int64) (map[string]interf
 		"params":  params,
 	}
 
-	resp, err := c.doRPCRequest(ctx, rpcReq)
+	resp, err := c.doRPCRequest(ctx, rpcReq, httpbody.Small)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +408,9 @@ type RPCError struct {
 	Data    string `json:"data,omitempty"`
 }
 
-func (c *Client) doRPCRequest(ctx context.Context, req interface{}) (*RPCResponse, error) {
+// doRPCRequest sends a JSON-RPC request to CometBFT and reads its answer, of
+// at most limit bytes (see the httpbody caps).
+func (c *Client) doRPCRequest(ctx context.Context, req interface{}, limit int64) (*RPCResponse, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -362,13 +429,13 @@ func (c *Client) doRPCRequest(ctx context.Context, req interface{}) (*RPCRespons
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := httpbody.ReadAll(resp.Body, limit)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var rpcResp RPCResponse
-	if err := json.Unmarshal(respBody, &rpcResp); err != nil {
+	if err := httpbody.Unmarshal(respBody, &rpcResp); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 

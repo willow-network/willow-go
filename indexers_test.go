@@ -3,16 +3,20 @@ package willow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+
+	"github.com/willow-network/willow-go/consensus"
 )
 
 func info(did string, subgroves []string, perf float64, status string) IndexerInfo {
 	return IndexerInfo{
 		IndexerDID:       did,
 		Subgroves:        subgroves,
-		StakeAmount:      100,
+		StakeAmount:      consensus.NewUint128(100),
 		Endpoint:         "http://" + did + ":9090",
 		QueryEndpoint:    "http://" + did + ":3032",
 		Status:           status,
@@ -164,5 +168,53 @@ func TestErrorTypesHaveContext(t *testing.T) {
 	n := &NoIndexersReachableError{SubgroveID: "sg-x", Details: "timed out"}
 	if n.Error() == "" {
 		t.Fatal("empty Error()")
+	}
+}
+
+// A routed query tries at most the three best-scored indexers serving the
+// subgrove, so a registry listing many failing indexers can't make one query
+// send many requests; Auto then falls back to the API.
+func TestRoutedQueryTriesAtMostThreeIndexers(t *testing.T) {
+	var mu sync.Mutex
+	tried := map[string]int{}
+	var indexers []IndexerInfo
+	for i := 0; i < 6; i++ {
+		did := fmt.Sprintf("did:willow:i%d", i)
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			tried[did]++
+			mu.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+		}))
+		t.Cleanup(srv.Close)
+		indexers = append(indexers, IndexerInfo{IndexerDID: did, Subgroves: []string{"sg"}, Endpoint: srv.URL,
+			QueryEndpoint: srv.URL, Status: "active", PerformanceScore: float64(i)})
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/indexers" {
+			_ = json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "data": indexers})
+			return
+		}
+		_, _ = w.Write([]byte(`{"columns":["a"],"rows":[[1]]}`))
+	}))
+	t.Cleanup(api.Close)
+	client, err := NewClient(api.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := client.Indexing.SqlQueryWithSource(ctx, "sg", "SELECT a", false, QuerySourceIndexer); err == nil {
+		t.Fatal("every indexer failed, yet the query succeeded")
+	}
+	got, err := client.Indexing.SqlQueryWithSource(ctx, "sg", "SELECT a", false, QuerySourceAuto)
+	if err != nil || got.Source != ServedByValidator || !got.Fallback {
+		t.Fatalf("auto: %+v, %v; want the API's answer after the fallback", got, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := map[string]int{"did:willow:i5": 2, "did:willow:i4": 2, "did:willow:i3": 2}
+	if fmt.Sprint(tried) != fmt.Sprint(want) {
+		t.Fatalf("indexers tried %v, want the three best twice each: %v", tried, want)
 	}
 }

@@ -185,8 +185,26 @@ type TrustedState struct {
 	ValidatorSet ValidatorSet  `json:"validator_set"`
 }
 
-// VerificationResult represents the result of header verification.
+// VerificationResult is what VerifyHeader found of a header. VotingPower is
+// the voting power of the validators the commit lists as signing,
+// SignatureCount how many it lists, and TotalPower the validator set's, all
+// from the validator set the untrusted block carries; no signature is
+// verified.
 type VerificationResult struct {
+	// ChecksPassed is true when the header passed VerifyHeader's checks: its
+	// chain id; a height and time after the trusted header's; the trusting
+	// period and clock drift; for the next height, a validators hash equal to
+	// the trusted header's next validators hash; and the voting power its
+	// commit lists as signing meeting the trust threshold of the validator
+	// set the untrusted block itself carries. No check verifies a signature
+	// or ties that validator set to the header's validators hash or to the
+	// trusted validators, so a header anyone can build passes: ChecksPassed
+	// doesn't mean the validators signed the header.
+	ChecksPassed bool `json:"checks_passed"`
+	// Verified is ChecksPassed. It doesn't mean the header is verified.
+	//
+	// Deprecated: no signature is verified; use ChecksPassed, which says
+	// what passed.
 	Verified       bool   `json:"verified"`
 	Height         int64  `json:"height"`
 	AppHash        string `json:"app_hash"`
