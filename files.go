@@ -398,9 +398,11 @@ func (f *FileOperations) Delete(subgroveID, fileKey string, signing *FileSigning
 // the node's DID, and Nonce is the transaction's nonce (take it with
 // Client.NextNonce(ctx, nodeDID)). It is signed over
 // FormatUnregisterStorageNodeMessage, which binds the node and the nonce.
+// Without a node DID or a SignFunc it sends nothing and returns a validation
+// error.
 func (f *FileOperations) UnregisterStorageNode(nodeDID string, signing *FileSigningOptions) error {
-	if signing == nil || signing.SignFunc == nil {
-		return fmt.Errorf("signing options with a SignFunc are required to unregister a storage node")
+	if nodeDID == "" || signing == nil || signing.SignFunc == nil {
+		return NewValidationError("UnregisterStorageNode: a node DID and signing options with a SignFunc are required")
 	}
 
 	message, err := FormatUnregisterStorageNodeMessage(nodeDID, signing.Nonce)

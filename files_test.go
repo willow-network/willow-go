@@ -167,6 +167,17 @@ func TestFileWritesNeedSigning(t *testing.T) {
 			}()
 		}
 	}
+	// UnregisterStorageNode signs as the node it names: no node, or no
+	// SignFunc, is refused before anything is sent.
+	for name, call := range map[string]func() error{
+		"no node DID": func() error { return client.Files.UnregisterStorageNode("", fileSigning(id, 1)) },
+		"no signing":  func() error { return client.Files.UnregisterStorageNode(id.DID(), nil) },
+		"no SignFunc": func() error { return client.Files.UnregisterStorageNode(id.DID(), noSignFunc) },
+	} {
+		if err := call(); !IsValidationError(err) {
+			t.Errorf("UnregisterStorageNode, %s: %v; want a validation error", name, err)
+		}
+	}
 	if n := atomic.LoadInt64(&requests); n != 0 {
 		t.Fatalf("sent %d requests without signing", n)
 	}
