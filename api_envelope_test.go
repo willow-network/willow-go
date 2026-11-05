@@ -493,3 +493,47 @@ func TestRoutedQueryReadsTheEnvelope(t *testing.T) {
 		t.Fatalf("a failed envelope: %+v, %v; want its error", got, err)
 	}
 }
+
+// A historical query sends its path and key as arrays of byte values, as the
+// API reads a Vec<u8>, and include_proof even when false (the API's default
+// is true).
+func TestQueryHistoricalSendsBytesAsArrays(t *testing.T) {
+	var sent []map[string]json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		sent = append(sent, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"success":true,"state_root":"00","block_range":[1,2],"data":null,"can_reindex":false}`))
+	}))
+	defer srv.Close()
+	client, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, req := range []*HistoricalQueryRequest{
+		{Path: [][]byte{[]byte("sg"), {0, 255}}, Key: []byte{1, 2}, QueryType: "get"},
+		{Path: [][]byte{}, IncludeProof: true},
+	} {
+		if _, err := client.Data.QueryHistorical(ctx, "sg", "c", req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []map[string]string{
+		{"path": `[[115,103],[0,255]]`, "key": `[1,2]`, "query_type": `"get"`, "include_proof": `false`},
+		{"path": `[]`, "include_proof": `true`},
+	}
+	for i, body := range sent {
+		if len(body) != len(want[i]) {
+			t.Errorf("query %d sent %s, want %v", i, body, want[i])
+		}
+		for field, value := range want[i] {
+			if string(body[field]) != value {
+				t.Errorf("query %d sent %s %s, want %s", i, field, body[field], value)
+			}
+		}
+	}
+}

@@ -295,11 +295,33 @@ type QueryResponse struct {
 }
 
 // HistoricalQueryRequest represents a request for historical checkpoint data.
+// It is sent with Path and Key as arrays of byte values, and IncludeProof
+// even when false (the API's default is true).
 type HistoricalQueryRequest struct {
-	Path         [][]byte `json:"path"`                    // GroveDB path as byte arrays
-	Key          []byte   `json:"key,omitempty"`           // Key to query (for single-key queries)
-	QueryType    string   `json:"query_type,omitempty"`    // Query type: "get", "get_range", "get_path"
-	IncludeProof bool     `json:"include_proof,omitempty"` // Whether to include proof
+	Path         [][]byte `json:"path"`                 // GroveDB path as byte arrays
+	Key          []byte   `json:"key,omitempty"`        // Key to query (for single-key queries)
+	QueryType    string   `json:"query_type,omitempty"` // Query type: "get", "get_range", "get_path"
+	IncludeProof bool     `json:"include_proof"`        // Whether to include proof
+}
+
+// MarshalJSON writes the request as the API reads it: Path and Key as arrays
+// of byte values (a Vec<u8>), not base64.
+func (r HistoricalQueryRequest) MarshalJSON() ([]byte, error) {
+	path := make([]consensus.ByteArray, len(r.Path))
+	for i, segment := range r.Path {
+		path[i] = segment
+	}
+	var key *consensus.ByteArray
+	if r.Key != nil {
+		k := consensus.ByteArray(r.Key)
+		key = &k
+	}
+	return json.Marshal(struct {
+		Path         []consensus.ByteArray `json:"path"`
+		Key          *consensus.ByteArray  `json:"key,omitempty"`
+		QueryType    string                `json:"query_type,omitempty"`
+		IncludeProof bool                  `json:"include_proof"`
+	}{path, key, r.QueryType, r.IncludeProof})
 }
 
 // HistoricalQueryResponse represents the response from a historical query.
